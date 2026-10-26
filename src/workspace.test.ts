@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { advanceTasks, detectKind, getModelDependents, rechunkKnowledge, retrieveChunks, seed, shouldReadFileContent, splitContent, validateFiles } from './workspace'
+import { advanceTasks, detectKind, getModelDependents, logKnowledgeIds, rechunkKnowledge, restoreChunkSource, retrieveChunks, seed, shouldReadFileContent, splitContent, validateFiles } from './workspace'
 
 describe('knowledge ingestion', () => {
   it('recognizes all required formats and rejects unsupported data', () => {
@@ -63,5 +63,15 @@ describe('knowledge ingestion', () => {
     expect(dependents('text-embedding-v4').some((item) => item.includes('Embedding'))).toBe(true)
     expect(dependents('qwen3-rerank').some((item) => item.includes('Rerank'))).toBe(true)
     expect(dependents('gemini-flash')).toEqual([])
+  })
+  it('removes shared overlap before rebuilding instead of duplicating content', () => {
+    const source = restoreChunkSource([{ text: 'abcde' }, { text: 'defgh' }, { text: 'ghij' }])
+    expect(source).toBe('abcdefghij')
+    expect(splitContent(source, 5, 2)).toEqual(['abcde', 'defgh', 'ghij'])
+    expect(restoreChunkSource([{ text: '第一章' }, { text: '第二章' }])).toBe('第一章\n\n第二章')
+  })
+  it('keeps every knowledge source on multi-knowledge logs and supports legacy records', () => {
+    expect(logKnowledgeIds({ kbId: 'legacy' })).toEqual(['legacy'])
+    expect(logKnowledgeIds({ kbId: 'primary', kbIds: ['primary', 'secondary'] })).toEqual(['primary', 'secondary'])
   })
 })

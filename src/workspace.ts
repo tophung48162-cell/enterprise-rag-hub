@@ -12,7 +12,7 @@ export interface HubDocument {
 export interface HubTask { id: string; kbId: string; fileIds: string[]; state: BuildState; progress: number; created: string; error?: string }
 export interface HubModel { id: string; name: string; provider: string; type: 'LLM' | 'Embedding' | 'Rerank'; enabled: boolean; dimension?: number }
 export interface HubProvider { id: string; name: string; url: string; configured: boolean; latency: number }
-export interface HubLog { id: string; kbId: string; query: string; answer: string; model: string; input: number; output: number; duration: number; time: string; citations: number; role: string }
+export interface HubLog { id: string; kbId: string; kbIds?: string[]; query: string; answer: string; model: string; input: number; output: number; duration: number; time: string; citations: number; role: string }
 export interface HubChunk { id: string; documentId: string; kbId: string; title: string; text: string; page: number; indexed: boolean }
 export interface HubAssistant { id: string; name: string; description: string; kbIds: string[]; model: string; prompt: string; topK: number; threshold: number; rerank: boolean; published: boolean; managed: boolean }
 export interface HubChatMessage { id: string; role: 'user' | 'assistant'; text: string; citationIds: string[]; tokens?: number; duration?: number }
@@ -169,10 +169,26 @@ export function splitContent(text: string, target: number, overlap: number): str
   return chunks
 }
 
+export function restoreChunkSource(chunks: Pick<HubChunk, 'text'>[]): string {
+  return chunks.reduce((source, chunk) => {
+    if (!source) return chunk.text
+    const maxOverlap = Math.min(source.length, chunk.text.length)
+    let shared = 0
+    for (let size = maxOverlap; size > 0; size -= 1) {
+      if (source.endsWith(chunk.text.slice(0, size))) { shared = size; break }
+    }
+    return `${source}${shared ? '' : '\n\n'}${chunk.text.slice(shared)}`
+  }, '')
+}
+
+export function logKnowledgeIds(log: Pick<HubLog, 'kbId' | 'kbIds'>): string[] {
+  return log.kbIds?.length ? log.kbIds : [log.kbId]
+}
+
 export function rechunkKnowledge(state: HubState, kbId: string, target: number, overlap: number): HubState {
   const docs = state.documents.filter((doc) => doc.kbId === kbId)
   const replacements = docs.flatMap((doc) => {
-    const text = state.chunks.filter((chunk) => chunk.documentId === doc.id).map((chunk) => chunk.text).join('\n\n')
+    const text = restoreChunkSource(state.chunks.filter((chunk) => chunk.documentId === doc.id))
     return splitContent(text, target, overlap).map((text, index) => ({ id: uid('chunk'), kbId, documentId: doc.id, title: doc.name.replace(/\.[^.]+$/, '') + ` · 分块 ${index + 1}`, text, page: index + 1, indexed: false }))
   })
   return { ...state, chunks: [...state.chunks.filter((chunk) => chunk.kbId !== kbId), ...replacements] }
