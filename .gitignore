@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+.vite/
+coverage/
+.tmp/
+playwright-report/
+test-results/
+
+# 本地工具、授权凭据、托管标识和交接记录不进入公开仓库
+.tools/
+.openai/
+项目交接文档.md
