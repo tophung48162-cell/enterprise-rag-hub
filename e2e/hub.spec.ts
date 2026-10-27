@@ -27,6 +27,7 @@ async function selectKnowledgeBase(page: Page, name: string) {
 test('三种角色的菜单、数据范围和直接路由权限正确', async ({ page }) => {
   await page.goto('/workbench')
   await expect(page.locator('nav[aria-label="主导航"] button')).toHaveCount(6)
+  await expect(page.locator('.ant-card').filter({ hasText: '知识处理动态' })).toContainText('演示数据')
 
   await selectRole(page, '知识库管理人员')
   await expect(page).toHaveURL(/\/workbench$/)
