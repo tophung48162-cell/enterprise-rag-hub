@@ -10,8 +10,8 @@ export interface HubDocument {
   state: BuildState; chunks: number; progress: number; parser: string; updated: string
 }
 export interface HubTask { id: string; kbId: string; fileIds: string[]; state: BuildState; progress: number; created: string; error?: string }
-export interface HubModel { id: string; name: string; provider: string; type: 'LLM' | 'Embedding' | 'Rerank'; enabled: boolean; dimension?: number }
-export interface HubProvider { id: string; name: string; url: string; configured: boolean; latency: number }
+export interface HubModel { id: string; name: string; provider: string; type: 'LLM' | 'Embedding' | 'Rerank'; enabled: boolean; dimension?: number; providerId?: string }
+export interface HubProvider { id: string; name: string; url: string; configured: boolean; latency: number; kind?: 'tongyi' | 'openrouter' | 'aihubmix'; enabled?: boolean }
 export interface HubLog { id: string; kbId: string; kbIds?: string[]; query: string; answer: string; model: string; input: number; output: number; duration: number; time: string; citations: number; role: string }
 export interface HubChunk { id: string; documentId: string; kbId: string; title: string; text: string; page: number; indexed: boolean }
 export interface HubAssistant { id: string; name: string; description: string; kbIds: string[]; model: string; prompt: string; topK: number; threshold: number; rerank: boolean; published: boolean; managed: boolean }

@@ -15,7 +15,7 @@ FastAPI + LangChain 后端第一阶段，当前实现服务商／模型配置、
 
 ## 尚未实现
 
-知识库与文档管理、Word／PDF／表格解析、分块、pgvector 索引、检索、Rerank 问答、SSE 对话和查询日志仍属于后续阶段。当前 React 页面仍使用浏览器 Mock，尚未连接这些 API。
+知识库与文档管理、Word／PDF／表格解析、分块、pgvector 索引、检索、Rerank 问答、SSE 对话和查询日志仍属于后续阶段。React 已接入本 README 中的服务商／模型与图片 OCR API；其余页面仍使用浏览器 Mock。当前联调测试使用 HTTP 替身，真实云服务和容器运行仍未验收。
 
 ## 本地开发
 

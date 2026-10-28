@@ -7,6 +7,9 @@ test.beforeEach(async ({ page }) => {
   browserErrors.set(page, errors)
   page.on('pageerror', (error) => errors.push(error.message))
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
+  for (const path of ['providers', 'models']) {
+    await page.route(`**/api/v1/${path}`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: 'null' }))
+  }
 })
 
 test.afterEach(async ({ page }) => {
@@ -367,4 +370,99 @@ test('真实 Markdown 与 CSV 文件可通过选择、校验、预览、构建�
   await page.getByPlaceholder('输入一个真实业务问题').fill('曜石项目的验收口令是什么？')
   await page.locator('.retrieval-layout').getByRole('button', { name: /测试检索/ }).click()
   await expect(page.locator('.retrieval-result').first()).toContainText('星河可信检索')
+})
+
+test('连接后端后服务商、模型保存和模型测试均走真实 API', async ({ page }) => {
+  const providers: object[] = []
+  const models: object[] = []
+  await page.route('**/api/v1/providers', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(providers) })
+      return
+    }
+    const body = route.request().postDataJSON()
+    const provider = { id: 'provider-tongyi', kind: body.kind, name: body.name, base_url: body.base_url, configured: Boolean(body.api_key), enabled: true }
+    providers.push(provider)
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(provider) })
+  })
+  await page.route('**/api/v1/models', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(models) })
+      return
+    }
+    const body = route.request().postDataJSON()
+    const model = { id: 'model-ocr', provider_id: body.provider_id, remote_model_id: body.remote_model_id, capability: body.capability, dimensions: body.dimensions || null, enabled: body.enabled }
+    models.push(model)
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(model) })
+  })
+  await page.route('**/api/v1/models/model-ocr/test', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ success: true, duration_ms: 128, input_tokens: 3, output_tokens: 1, usage_source: 'provider' }),
+  }))
+
+  await page.goto('/models')
+  await expect(page.locator('.page > .ant-alert')).toContainText('已连接 FastAPI')
+  await page.getByRole('button', { name: '配置通义百炼', exact: true }).click()
+  let drawer = page.locator('.ant-drawer:visible')
+  await drawer.getByPlaceholder('输入真实 API Key').fill('e2e-secret-not-a-real-key')
+  await drawer.getByRole('button', { name: '保存配置', exact: true }).click()
+  await expect(page.locator('.ant-message')).toContainText('密钥由后端加密保管')
+  await expect(page.locator('.provider-grid')).toContainText('已配置 · 后端')
+
+  await page.getByRole('button', { name: /添加模型/ }).click()
+  drawer = page.locator('.ant-drawer:visible')
+  await drawer.getByPlaceholder('服务商提供的模型 ID').fill('qwen-vl-ocr-latest')
+  await drawer.getByRole('button', { name: '保存模型', exact: true }).click()
+  await expect(page.locator('.ant-message')).toContainText('模型配置已保存到后端')
+  const row = page.locator('tbody tr').filter({ hasText: 'qwen-vl-ocr-latest' })
+  await expect(row).toHaveCount(1)
+  await row.getByRole('button', { name: '测试', exact: true }).click()
+  await expect(page.locator('.ant-message')).toContainText('真实连接测试通过 · 128 ms')
+  expect(providers).toHaveLength(1)
+  expect(models).toHaveLength(1)
+  expect(JSON.stringify(providers)).not.toContain('e2e-secret-not-a-real-key')
+})
+
+test('图片经真实 OCR 异步链路识别后才进入分块并保留来源', async ({ page }) => {
+  const provider = { id: 'provider-tongyi', kind: 'tongyi', name: '通义百炼', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', configured: true, enabled: true }
+  const model = { id: 'model-ocr', provider_id: provider.id, remote_model_id: 'qwen-vl-ocr-latest', capability: 'LLM', dimensions: null, enabled: true }
+  await page.route('**/api/v1/providers', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([provider]) }))
+  await page.route('**/api/v1/models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([model]) }))
+  const baseResult = {
+    id: 'ocr-e2e', retry_of_id: null, file_name: '验收流程图.png', sha256: 'e2e', input_tokens: 20, output_tokens: 8,
+    usage_source: 'provider', created_at: '2026-10-27T00:00:00Z', error_code: null,
+  }
+  await page.route('**/api/v1/ocr/recognize/async', (route) => route.fulfill({
+    status: 202, contentType: 'application/json',
+    body: JSON.stringify({ ...baseResult, status: 'queued', text: '', duration_ms: null, completed_at: null }),
+  }))
+  await page.route('**/api/v1/ocr/ocr-e2e', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ ...baseResult, status: 'ready', text: '星河流程：提交申请后，由负责人验收并归档。', duration_ms: 320, completed_at: '2026-10-27T00:00:01Z' }),
+  }))
+
+  await page.goto('/knowledge')
+  await page.getByRole('button', { name: /新建知识库/ }).click()
+  await page.getByPlaceholder('例如：产品与技术文档').fill('图片 OCR 验收知识库')
+  await page.getByRole('button', { name: '创建知识库', exact: true }).click()
+  await page.locator('.knowledge-content .page-heading').getByRole('button', { name: /导入知识/ }).click()
+  const drawer = page.locator('.ant-drawer:visible')
+  await drawer.locator('input[type="file"]').setInputFiles({
+    name: '验收流程图.png', mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+  })
+  await drawer.getByRole('button', { name: '下一步', exact: true }).click()
+  await expect(drawer.getByRole('combobox', { name: '通义 OCR 模型' })).toBeVisible()
+  await drawer.locator('.import-footer').getByRole('button', { name: /生成分块预览/ }).click()
+  const chunk = drawer.locator('.chunk-item').filter({ hasText: '验收流程图.png' })
+  await expect(chunk).toContainText('星河流程：提交申请后，由负责人验收并归档。')
+  await expect(chunk).toContainText('真实云端 OCR')
+  await expect(chunk).not.toContainText('演示解析内容')
+
+  await drawer.getByRole('button', { name: '下一步', exact: true }).click()
+  await drawer.getByRole('button', { name: '确认并构建索引', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => {
+    const state = JSON.parse(localStorage.getItem('knowledge-hub-workspace-v3')!)
+    return state.documents.find((doc: { name: string }) => doc.name === '验收流程图.png')?.parser
+  })).toBe('通义云端 OCR')
 })
