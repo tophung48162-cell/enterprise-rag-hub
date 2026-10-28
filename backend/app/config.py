@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:4173"])
     http_timeout_seconds: float = 60.0
     ocr_max_file_bytes: int = 10 * 1024 * 1024
+    document_max_file_bytes: int = 50 * 1024 * 1024
 
 
 @lru_cache

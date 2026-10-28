@@ -6,11 +6,11 @@
 
 ## 当前实现状态（2026-10-28）
 
-已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 初始迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原图存储、同步与 Celery 异步 OCR、持久化状态和失败重试。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
+已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原件存储、同步与 Celery 异步 OCR、持久化状态和失败重试。知识库、Markdown 文档和分块已进入第二阶段：支持知识库设置、Markdown 校验与上传、LangChain 结构化分块、幂等重切、人工编辑及删除清理。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
 
-后端现有 15 项自动化测试、前端 35 项单元／组件／API 契约测试和 20 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入服务商／模型配置和图片异步 OCR，浏览器测试以内存 HTTP 替身验证请求、轮询和错误边界。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器启动和三家云端模型调用均未验收，不应据此判断真实 OCR 已可用。
+后端现有 27 项自动化测试、前端 38 项单元／组件／API 契约测试和 21 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入服务商／模型配置、图片异步 OCR、知识库与 Markdown 分块，浏览器测试以内存 HTTP 替身验证请求、轮询、持久化分块和错误边界。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器启动和三家云端模型调用均未验收，不应据此判断真实 OCR 或云模型已可用。
 
-知识库、Word／PDF／表格解析、分块与版本化索引、检索、Rerank、SSE 问答和运行日志是后续实现范围。
+Word／PDF／Excel 服务端解析、版本化向量索引、Embedding 构建、真实检索、Rerank、SSE 问答和运行日志是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索。
 
 ## 1. 设计目标与边界
 
@@ -210,11 +210,11 @@ OCR 通过统一 `OcrProvider` 接口接入。默认使用通义云端能力，�
 
 ### 7.3 分块策略
 
-- 结构优先：标题路径 + 语义段落，再按 Token 目标长度切分。
+- 结构优先：标题路径 + 语义段落，再按目标长度切分。
 - 普通文本可使用 LangChain 文本分割器，保留来源 metadata。
 - 表格按表头 + 行组生成可检索文本，同时保留结构化 JSON 和原始 Sheet／单元格坐标。
 - 图片 OCR 文本保留页码和区域；无有效文本时标记为空，不进入向量索引。
-- `chunk_size`、`overlap` 按 Token 计算并校验；预览与正式构建必须调用同一个分块实现和相同参数。
+- 当前 Markdown 实现的 `chunk_size`、`overlap` 按字符计算并校验，预览直接持久化草稿分块；后续索引构建必须复用同一实现和参数。若后续改为 Token 计数，需要同步迁移配置语义和前端说明。
 
 ## 8. 模型网关
 
@@ -318,9 +318,9 @@ error             { error_code, message, retryable }
 | `GET / POST` | `/knowledge-bases` | 列表／创建 |
 | `GET / PATCH / DELETE` | `/knowledge-bases/{id}` | 详情／设置／删除保护 |
 | `GET` | `/knowledge-bases/{id}/documents` | 文件列表和状态筛选 |
-| `POST` | `/knowledge-bases/{id}/documents` | multipart 上传原件并创建解析任务 |
+| `POST` | `/knowledge-bases/{id}/documents` | 当前支持 multipart Markdown 原件上传；其他格式解析任务待实现 |
 | `GET / DELETE` | `/documents/{id}` | 文件详情／删除 |
-| `POST` | `/documents/{id}/preview` | 使用指定解析与分块参数生成预览 |
+| `POST` | `/documents/{id}/preview` | 当前由 LangChain 重切并持久化 Markdown 草稿分块 |
 | `POST` | `/documents/{id}/retry` | 从失败阶段重试 |
 | `GET` | `/documents/{id}/chunks` | 分块列表、正文和来源 |
 | `PATCH` | `/chunks/{id}` | 编辑草稿分块，标记待索引 |

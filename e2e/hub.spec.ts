@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
   browserErrors.set(page, errors)
   page.on('pageerror', (error) => errors.push(error.message))
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
-  for (const path of ['providers', 'models']) {
+  for (const path of ['providers', 'models', 'knowledge-bases']) {
     await page.route(`**/api/v1/${path}`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: 'null' }))
   }
 })
@@ -421,6 +421,94 @@ test('连接后端后服务商、模型保存和模型测试均走真实 API', a
   expect(providers).toHaveLength(1)
   expect(models).toHaveLength(1)
   expect(JSON.stringify(providers)).not.toContain('e2e-secret-not-a-real-key')
+})
+
+test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真实 API 闭环', async ({ page }) => {
+  const models = [
+    { id: 'embed-e2e', provider_id: 'provider-e2e', remote_model_id: 'text-embedding-v4', capability: 'Embedding', dimensions: 1024, enabled: true },
+    { id: 'rank-e2e', provider_id: 'provider-e2e', remote_model_id: 'qwen3-rerank', capability: 'Rerank', dimensions: null, enabled: true },
+  ]
+  let created = false
+  let uploaded = false
+  let documentStatus = 'uploaded'
+  let editedText = ''
+  const knowledge = {
+    id: 'kb-e2e', name: '联机验收知识库', description: '真实 API 闭环', department: '企业通用', published: false, managed: true,
+    embedding_model_id: 'embed-e2e', rerank_model_id: 'rank-e2e', chunk_size: 800, chunk_overlap: 120, chunk_strategy: 'structure',
+    created_at: '2026-10-28T00:00:00Z', updated_at: '2026-10-28T00:00:00Z',
+  }
+  const document = () => ({
+    id: 'doc-e2e', kb_id: knowledge.id, original_name: '联机研发规范.md', mime: 'text/markdown', extension: '.md', size_bytes: 96, sha256: 'e2e-sha',
+    status: documentStatus, parser_version: 'markdown-v1', error_code: null, chunk_count: documentStatus === 'uploaded' ? 0 : 2,
+    created_at: knowledge.created_at, updated_at: knowledge.updated_at,
+  })
+  const chunks = () => [1, 2].map((sequence) => ({
+    id: `chunk-e2e-${sequence}`, kb_id: knowledge.id, document_id: 'doc-e2e', sequence,
+    title: sequence === 1 ? '研发规范 · 验收要求' : '研发规范 · 发布流程',
+    text: sequence === 1 ? editedText || '星河项目的验收口令是“持久化可信分块”。' : '发布前必须完成服务端回归并保留验收记录。',
+    page_number: sequence, status: 'pending_index', created_at: knowledge.created_at, updated_at: knowledge.updated_at,
+  }))
+  await page.route('**/api/v1/models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(models) }))
+  await page.route('**/api/v1/knowledge-bases', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(created ? [{ ...knowledge, document_count: documentStatus === 'uploaded' ? 0 : 1, chunk_count: documentStatus === 'uploaded' ? 0 : 2 }] : []) })
+      return
+    }
+    const body = route.request().postDataJSON()
+    expect(body).toMatchObject({ name: knowledge.name, embedding_model_id: 'embed-e2e', rerank_model_id: 'rank-e2e' })
+    created = true
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ ...knowledge, document_count: 0, chunk_count: 0 }) })
+  })
+  await page.route('**/api/v1/knowledge-bases/kb-e2e/documents', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(uploaded ? [document()] : []) })
+      return
+    }
+    uploaded = true
+    documentStatus = 'uploaded'
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(document()) })
+  })
+  await page.route('**/api/v1/documents/doc-e2e/preview', async (route) => {
+    const body = route.request().postDataJSON()
+    expect(body).toMatchObject({ chunk_size: 800, chunk_overlap: 120, chunk_strategy: 'structure' })
+    documentStatus = 'pending_index'
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ document: document(), chunks: chunks() }) })
+  })
+  await page.route('**/api/v1/documents/doc-e2e/chunks', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(chunks()) }))
+  await page.route('**/api/v1/chunks/chunk-e2e-1', async (route) => {
+    editedText = route.request().postDataJSON().text
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(chunks()[0]) })
+  })
+
+  await page.goto('/knowledge')
+  await expect(page.locator('.page > .ant-alert')).toContainText('已连接 FastAPI')
+  await page.getByRole('button', { name: /新建知识库/ }).click()
+  await page.getByPlaceholder('例如：产品与技术文档').fill(knowledge.name)
+  await page.getByRole('button', { name: '创建知识库', exact: true }).click()
+  await expect(page).toHaveURL(/\/knowledge\/kb-e2e/)
+  await page.locator('.knowledge-content .page-heading').getByRole('button', { name: /导入知识/ }).click()
+  const drawer = page.locator('.ant-drawer:visible')
+  await drawer.locator('input[type="file"]').setInputFiles({
+    name: '联机研发规范.md', mimeType: 'text/markdown',
+    buffer: Buffer.from('# 验收要求\n\n星河项目的验收口令是“持久化可信分块”。\n\n# 发布流程\n\n发布前必须完成服务端回归并保留验收记录。'),
+  })
+  await drawer.getByRole('button', { name: '下一步', exact: true }).click()
+  await drawer.getByRole('button', { name: '生成分块预览', exact: true }).click()
+  await expect(drawer.locator('.import-step')).toContainText('持久化可信分块')
+  await expect(drawer.locator('.import-step')).toContainText('FastAPI · LangChain 持久化分块')
+  await drawer.getByRole('button', { name: '下一步', exact: true }).click()
+  await drawer.getByRole('button', { name: '保存分块（待索引）', exact: true }).click()
+  await expect(page.locator('.workspace-summary')).toContainText('0 份已索引')
+  await expect(page.locator('.table-card tbody')).toContainText('待索引')
+
+  await page.getByRole('button', { name: /分块预览/ }).click()
+  await page.locator('.chunk-item').first().getByRole('button', { name: /编辑/ }).click()
+  await page.getByLabel('分块正文').fill('人工验收修订：服务端分块内容已更新。')
+  await page.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(page.locator('.chunk-item').first()).toContainText('人工验收修订')
+  expect(editedText).toBe('人工验收修订：服务端分块内容已更新。')
+  await page.getByRole('button', { name: /文件与任务/ }).click()
+  await expect(page.locator('.task-list')).toContainText('真实向量索引任务尚未接入')
 })
 
 test('图片经真实 OCR 异步链路识别后才进入分块并保留来源', async ({ page }) => {

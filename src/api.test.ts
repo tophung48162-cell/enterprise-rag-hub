@@ -49,6 +49,40 @@ describe('FastAPI client contracts', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ provider_id: 'p1', remote_model_id: 'text-embedding-v4', capability: 'Embedding', dimensions: 1024, enabled: true })
   })
 
+  it('creates a knowledge base with persistent model references and chunk settings', async () => {
+    const knowledgeBase = { id: 'kb-1', name: '研发制度', description: '真实资料', department: '产品研发', published: false, managed: true, embedding_model_id: 'embed-1', rerank_model_id: 'rank-1', chunk_size: 800, chunk_overlap: 120, chunk_strategy: 'structure', document_count: 0, chunk_count: 0, created_at: '2026-10-28T00:00:00Z', updated_at: '2026-10-28T00:00:00Z' }
+    fetchMock.mockResolvedValueOnce(jsonResponse(knowledgeBase, 201))
+    await expect(hubApi.createKnowledgeBase({ name: '研发制度', description: '真实资料', department: '产品研发', embedding_model_id: 'embed-1', rerank_model_id: 'rank-1', published: false, chunk_size: 800, chunk_overlap: 120, chunk_strategy: 'structure' })).resolves.toEqual(knowledgeBase)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/knowledge-bases')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ embedding_model_id: 'embed-1', rerank_model_id: 'rank-1', chunk_strategy: 'structure' })
+  })
+
+  it('uploads Markdown as multipart without setting a JSON content type', async () => {
+    const document = { id: 'doc-1', kb_id: 'kb-1', original_name: '研发规范.md', mime: 'text/markdown', extension: '.md', size_bytes: 24, sha256: 'abc', status: 'uploaded', parser_version: 'markdown-v1', error_code: null, chunk_count: 0, created_at: '2026-10-28T00:00:00Z', updated_at: '2026-10-28T00:00:00Z' }
+    fetchMock.mockResolvedValueOnce(jsonResponse(document, 201))
+    const file = new File(['# 研发规范\n\n正文'], '研发规范.md', { type: 'text/markdown' })
+    await expect(hubApi.uploadDocument('kb-1', file)).resolves.toEqual(document)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/v1/knowledge-bases/kb-1/documents')
+    expect(init.body).toBeInstanceOf(FormData)
+    const uploaded = init.body.get('file') as File
+    expect(uploaded.name).toBe(file.name)
+    expect(uploaded.size).toBe(file.size)
+    expect(await uploaded.text()).toBe(await file.text())
+    expect(init.headers).toBeUndefined()
+  })
+
+  it('previews persistent chunks and patches edited chunk text with backend contracts', async () => {
+    const preview = { document: { id: 'doc-1', status: 'pending_index' }, chunks: [{ id: 'chunk-1', text: '服务端正文' }] }
+    fetchMock.mockResolvedValueOnce(jsonResponse(preview)).mockResolvedValueOnce(jsonResponse({ id: 'chunk-1', text: '人工修订正文', status: 'pending_index' }))
+    await hubApi.previewDocument('doc-1', { chunk_size: 600, chunk_overlap: 80, chunk_strategy: 'recursive' })
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/documents/doc-1/preview')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ chunk_size: 600, chunk_overlap: 80, chunk_strategy: 'recursive' })
+    await hubApi.patchChunk('chunk-1', '人工修订正文')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/chunks/chunk-1')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ text: '人工修订正文' })
+  })
+
   it('polls OCR from queued to ready and returns recognized text', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(ocrResult('queued'), 202)).mockResolvedValueOnce(jsonResponse(ocrResult('ready')))
     const file = new File(['image'], '流程图.png', { type: 'image/png' })

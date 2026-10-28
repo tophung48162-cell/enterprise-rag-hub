@@ -1,6 +1,6 @@
 # 知枢后端
 
-FastAPI + LangChain 后端第一阶段，当前实现服务商／模型配置、真实模型连接测试、云端 OCR、Alembic 迁移和独立 Celery OCR Worker。
+FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连接测试、云端 OCR、知识库与 Markdown 持久化分块、Alembic 迁移和独立 Celery OCR Worker。
 
 ## 已实现
 
@@ -10,12 +10,15 @@ FastAPI + LangChain 后端第一阶段，当前实现服务商／模型配置、
 - PNG、JPEG、WEBP 文件签名校验；原图写入私有 S3／MinIO 存储。
 - 同步识别、持久化异步识别、结果查询和失败记录重试。
 - OCR 状态保存在 PostgreSQL：`queued → processing → ready / failed`；Redis 只承担队列和短期结果，不是任务真相来源。
+- 知识库创建、列表、设置与非空删除保护；被知识库引用的模型不能删除。
+- Markdown 文件名、空文件、50 MB、UTF‑8、二进制与重复内容校验；原件保存到 S3／MinIO，元数据保存到 PostgreSQL。
+- LangChain `MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter` 持久化分块、幂等重切、人工编辑与文档删除清理。
 - Celery 有限重试、指数退避、软／硬超时和独立 Worker 进程。
 - 存活／数据库就绪检查、请求 ID 和统一脱敏错误结构。
 
 ## 尚未实现
 
-知识库与文档管理、Word／PDF／表格解析、分块、pgvector 索引、检索、Rerank 问答、SSE 对话和查询日志仍属于后续阶段。React 已接入本 README 中的服务商／模型与图片 OCR API；其余页面仍使用浏览器 Mock。当前联调测试使用 HTTP 替身，真实云服务和容器运行仍未验收。
+Word／PDF／Excel 服务端解析、pgvector 版本化索引、Embedding 构建、真实检索与 Rerank、SSE 问答和查询日志仍属于后续阶段。真实 Markdown 分块保存后为 `pending_index`，不会伪装成已索引。React 已接入本 README 中的服务商／模型、图片 OCR、知识库与 Markdown 分块 API；其余页面仍使用明确标记的浏览器 Mock。当前联调测试使用 HTTP 替身，真实云服务和容器运行仍未验收。
 
 ## 本地开发
 
@@ -56,6 +59,20 @@ docker compose up --build
 
 Compose 启动 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，并通过一次性 `minio-init` 创建私有桶。API 启动时先执行 Alembic，Worker 等待 API 就绪后启动。当前开发机未安装 Docker，因此仓库只完成了 Compose 静态校验，尚未进行容器运行验收。
 
+## 知识库与 Markdown 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET / POST` | `/api/v1/knowledge-bases` | 知识库列表／创建 |
+| `GET / PATCH / DELETE` | `/api/v1/knowledge-bases/{id}` | 详情／设置／非空删除保护 |
+| `GET / POST` | `/api/v1/knowledge-bases/{id}/documents` | 文档列表／multipart Markdown 上传 |
+| `GET / DELETE` | `/api/v1/documents/{id}` | 文档详情／删除原件及分块 |
+| `POST` | `/api/v1/documents/{id}/preview` | 按参数由 LangChain 重切并持久化分块 |
+| `GET` | `/api/v1/documents/{id}/chunks` | 查询持久化分块 |
+| `PATCH` | `/api/v1/chunks/{id}` | 编辑正文并标记 `pending_index` |
+
+上传接口当前只接受 `.md`。同名或同 SHA‑256 文件会返回冲突；重复预览在事务内替换旧分块，不产生重复序号。此阶段不启动 Embedding 或索引任务。
+
 ## OCR 接口
 
 | 方法 | 路径 | 说明 |
@@ -83,4 +100,4 @@ cd backend
 ../.venv/bin/pytest
 ```
 
-当前 15 项测试覆盖配置、密钥、模型网关契约、同步／异步 OCR、失败重试、队列异常和空库迁移。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**。
+当前 27 项测试覆盖配置、密钥、模型网关契约、同步／异步 OCR、失败重试、队列异常、知识库与模型引用保护、Markdown 上传校验、原件持久化、结构化分块、幂等重切、分块编辑、删除清理和迁移。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**。

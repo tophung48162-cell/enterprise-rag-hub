@@ -1,0 +1,196 @@
+import hashlib
+from pathlib import Path
+
+from botocore.exceptions import BotoCoreError, ClientError
+from langchain_core.documents import Document as LangChainDocument
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.db_models import Chunk, Document, KnowledgeBase
+from app.errors import ApiError
+from app.services.configs import get_model
+from app.storage import ObjectStorage
+
+MARKDOWN_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
+
+
+def get_knowledge_base(db: Session, knowledge_base_id: str) -> KnowledgeBase:
+    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
+    if not knowledge_base:
+        raise ApiError(404, "KNOWLEDGE_BASE_NOT_FOUND", "知识库不存在")
+    return knowledge_base
+
+
+def get_document(db: Session, document_id: str) -> Document:
+    document = db.get(Document, document_id)
+    if not document:
+        raise ApiError(404, "DOCUMENT_NOT_FOUND", "文档不存在")
+    return document
+
+
+def get_chunk(db: Session, chunk_id: str) -> Chunk:
+    chunk = db.get(Chunk, chunk_id)
+    if not chunk:
+        raise ApiError(404, "CHUNK_NOT_FOUND", "分块不存在")
+    return chunk
+
+
+def validate_chunk_config(chunk_size: int, chunk_overlap: int) -> None:
+    if chunk_overlap >= chunk_size:
+        raise ApiError(422, "INVALID_CHUNK_OVERLAP", "重叠长度必须小于目标分块长度")
+
+
+def validate_model_capability(db: Session, model_id: str, capability: str) -> None:
+    model = get_model(db, model_id)
+    if model.capability != capability:
+        raise ApiError(422, "MODEL_CAPABILITY_MISMATCH", f"请选择 {capability} 类型的模型")
+    if not model.enabled:
+        raise ApiError(409, "MODEL_DISABLED", f"{capability} 模型已停用")
+
+
+def safe_markdown_name(file_name: str) -> str:
+    name = Path(file_name.replace("\\", "/")).name.replace("\x00", "").strip()[:255]
+    if not name:
+        raise ApiError(422, "INVALID_FILE_NAME", "文件名称不能为空")
+    if not name.lower().endswith(".md"):
+        raise ApiError(415, "DOCUMENT_FORMAT_UNSUPPORTED", "当前真实上传链路仅支持 Markdown（.md）文件")
+    return name
+
+
+def decode_markdown(data: bytes) -> str:
+    if not data:
+        raise ApiError(422, "EMPTY_FILE", "不能上传空文件")
+    if len(data) > get_settings().document_max_file_bytes:
+        raise ApiError(413, "DOCUMENT_FILE_TOO_LARGE", "Markdown 文件超过 50 MB 服务端限制")
+    if b"\x00" in data:
+        raise ApiError(422, "INVALID_MARKDOWN", "文件包含二进制内容，不是有效的 UTF-8 Markdown")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ApiError(422, "MARKDOWN_ENCODING_UNSUPPORTED", "Markdown 必须使用 UTF-8 编码") from exc
+    if not text.strip():
+        raise ApiError(422, "EMPTY_DOCUMENT_CONTENT", "Markdown 没有可分块的文本内容")
+    return text
+
+
+def split_markdown(text: str, chunk_size: int, chunk_overlap: int, strategy: str) -> list[tuple[str, str]]:
+    validate_chunk_config(chunk_size, chunk_overlap)
+    if strategy == "structure":
+        sections = MarkdownHeaderTextSplitter(
+            headers_to_split_on=MARKDOWN_HEADERS,
+            strip_headers=False,
+        ).split_text(text)
+    else:
+        sections = [LangChainDocument(page_content=text)]
+    recursive = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", "。", "；", " ", ""],
+    )
+    split_documents = recursive.split_documents(sections)
+    results: list[tuple[str, str]] = []
+    for document in split_documents:
+        content = document.page_content.strip()
+        if not content:
+            continue
+        title = " / ".join(
+            str(document.metadata[key]) for key in ("h1", "h2", "h3") if document.metadata.get(key)
+        )
+        results.append((title or "Markdown 正文", content))
+    if not results:
+        raise ApiError(422, "EMPTY_DOCUMENT_CONTENT", "Markdown 没有可分块的文本内容")
+    return results
+
+
+def upload_markdown(
+    db: Session,
+    storage: ObjectStorage,
+    *,
+    knowledge_base: KnowledgeBase,
+    data: bytes,
+    file_name: str,
+    mime: str,
+) -> Document:
+    name = safe_markdown_name(file_name)
+    decode_markdown(data)
+    digest = hashlib.sha256(data).hexdigest()
+    duplicate = db.scalar(
+        select(Document).where(
+            Document.kb_id == knowledge_base.id,
+            or_(func.lower(Document.original_name) == name.lower(), Document.sha256 == digest),
+        )
+    )
+    if duplicate:
+        raise ApiError(409, "DOCUMENT_ALREADY_EXISTS", "同一知识库中已存在同名或相同内容的文件")
+    document = Document(
+        kb_id=knowledge_base.id,
+        original_name=name,
+        mime=mime or "text/markdown",
+        extension=".md",
+        size_bytes=len(data),
+        sha256=digest,
+        object_key="pending",
+        status="uploaded",
+        parser_version="markdown-v1",
+    )
+    db.add(document)
+    db.flush()
+    document.object_key = f"knowledge/{knowledge_base.id}/documents/{document.id}/{name}"
+    try:
+        storage.put_bytes(document.object_key, data, document.mime)
+        db.commit()
+    except (BotoCoreError, ClientError, OSError) as exc:
+        db.rollback()
+        raise ApiError(503, "OBJECT_STORAGE_UNAVAILABLE", "原件保存失败，请检查对象存储", retryable=True) from exc
+    return document
+
+
+def preview_markdown(
+    db: Session,
+    storage: ObjectStorage,
+    *,
+    document: Document,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunk_strategy: str,
+) -> list[Chunk]:
+    validate_chunk_config(chunk_size, chunk_overlap)
+    try:
+        data = storage.get_bytes(document.object_key)
+    except (BotoCoreError, ClientError, OSError, KeyError) as exc:
+        raise ApiError(503, "OBJECT_STORAGE_UNAVAILABLE", "无法读取 Markdown 原件", retryable=True) from exc
+    sections = split_markdown(decode_markdown(data), chunk_size, chunk_overlap, chunk_strategy)
+    document.chunks.clear()
+    db.flush()
+    for sequence, (title, text) in enumerate(sections):
+        document.chunks.append(
+            Chunk(
+                kb_id=document.kb_id,
+                sequence=sequence,
+                title=title,
+                text=text,
+                page_number=sequence + 1,
+                status="pending_index",
+            )
+        )
+    document.status = "pending_index"
+    document.error_code = None
+    document.knowledge_base.chunk_size = chunk_size
+    document.knowledge_base.chunk_overlap = chunk_overlap
+    document.knowledge_base.chunk_strategy = chunk_strategy
+    db.commit()
+    return document.chunks
+
+
+def delete_document(db: Session, storage: ObjectStorage, document: Document) -> None:
+    if document.status == "processing":
+        raise ApiError(409, "DOCUMENT_TASK_RUNNING", "文档正在处理，完成后才能删除")
+    object_key = document.object_key
+    try:
+        storage.delete_bytes(object_key)
+    except (BotoCoreError, ClientError, OSError, KeyError) as exc:
+        raise ApiError(503, "OBJECT_STORAGE_UNAVAILABLE", "原件删除失败，请稍后重试", retryable=True) from exc
+    db.delete(document)
+    db.commit()

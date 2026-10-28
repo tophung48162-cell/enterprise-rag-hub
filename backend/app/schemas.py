@@ -81,3 +81,89 @@ class OcrOut(BaseModel):
     error_code: str | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class KnowledgeBaseCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=200)
+    department: str = Field(min_length=1, max_length=100)
+    embedding_model_id: str
+    rerank_model_id: str | None = None
+    published: bool = False
+    chunk_size: int = Field(default=800, ge=100, le=4000)
+    chunk_overlap: int = Field(default=120, ge=0, le=3999)
+    chunk_strategy: Literal["structure", "recursive"] = "structure"
+
+
+class KnowledgeBasePatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=200)
+    department: str | None = Field(default=None, min_length=1, max_length=100)
+    embedding_model_id: str | None = None
+    rerank_model_id: str | None = None
+    published: bool | None = None
+    chunk_size: int | None = Field(default=None, ge=100, le=4000)
+    chunk_overlap: int | None = Field(default=None, ge=0, le=3999)
+    chunk_strategy: Literal["structure", "recursive"] | None = None
+
+
+class KnowledgeBaseOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    department: str
+    published: bool
+    managed: bool
+    embedding_model_id: str
+    rerank_model_id: str | None
+    chunk_size: int
+    chunk_overlap: int
+    chunk_strategy: str
+    document_count: int
+    chunk_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentOut(BaseModel):
+    id: str
+    kb_id: str
+    original_name: str
+    mime: str
+    extension: str
+    size_bytes: int
+    sha256: str
+    status: str
+    parser_version: str
+    error_code: str | None
+    chunk_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChunkOut(BaseModel):
+    id: str
+    kb_id: str
+    document_id: str
+    sequence: int
+    title: str
+    text: str
+    page_number: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentPreviewRequest(BaseModel):
+    chunk_size: int = Field(ge=100, le=4000)
+    chunk_overlap: int = Field(ge=0, le=3999)
+    chunk_strategy: Literal["structure", "recursive"] = "structure"
+
+
+class DocumentPreviewOut(BaseModel):
+    document: DocumentOut
+    chunks: list[ChunkOut]
+
+
+class ChunkPatch(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)

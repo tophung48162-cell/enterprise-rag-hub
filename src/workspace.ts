@@ -1,9 +1,9 @@
 export type FileKind = 'PDF' | 'Word' | 'Markdown' | '图片' | '表格'
-export type BuildState = 'ready' | 'processing' | 'failed'
+export type BuildState = 'ready' | 'processing' | 'failed' | 'uploaded' | 'pending'
 export interface HubKnowledge {
   id: string; name: string; description: string; department: string; color: string;
   published: boolean; managed: boolean; embedding: string; rerank: string; updated: string;
-  chunkSize?: number; overlap?: number; strategy?: string
+  chunkSize?: number; overlap?: number; strategy?: string; embeddingId?: string; rerankId?: string
 }
 export interface HubDocument {
   id: string; kbId: string; name: string; kind: FileKind; size: string;

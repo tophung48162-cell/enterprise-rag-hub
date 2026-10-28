@@ -48,6 +48,69 @@ class ModelConfig(Base):
     provider: Mapped[Provider] = relationship(back_populates="models")
 
 
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_bases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    department: Mapped[str] = mapped_column(String(100), nullable=False)
+    published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    managed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    embedding_model_id: Mapped[str] = mapped_column(ForeignKey("model_configs.id", ondelete="RESTRICT"))
+    rerank_model_id: Mapped[str | None] = mapped_column(ForeignKey("model_configs.id", ondelete="RESTRICT"))
+    chunk_size: Mapped[int] = mapped_column(Integer, default=800, nullable=False)
+    chunk_overlap: Mapped[int] = mapped_column(Integer, default=120, nullable=False)
+    chunk_strategy: Mapped[str] = mapped_column(String(32), default="structure", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    documents: Mapped[list[Document]] = relationship(back_populates="knowledge_base", cascade="all, delete-orphan")
+
+
+class Document(Base):
+    __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("kb_id", "original_name"),
+        UniqueConstraint("kb_id", "sha256"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"))
+    original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime: Mapped[str] = mapped_column(String(255), nullable=False)
+    extension: Mapped[str] = mapped_column(String(16), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(1000), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="uploaded", nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(64), default="markdown-v1", nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+    chunks: Mapped[list[Chunk]] = relationship(back_populates="document", cascade="all, delete-orphan")
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+    __table_args__ = (UniqueConstraint("document_id", "sequence"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"))
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    page_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending_index", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    document: Mapped[Document] = relationship(back_populates="chunks")
+
+
 class OcrResult(Base):
     __tablename__ = "ocr_results"
 

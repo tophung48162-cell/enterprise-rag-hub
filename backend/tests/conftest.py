@@ -28,6 +28,10 @@ class MemoryStorage:
     def get_bytes(self, key: str) -> bytes:
         return self.objects[key]
 
+    def delete_bytes(self, key: str) -> None:
+        self.objects.pop(key, None)
+        self.content_types.pop(key, None)
+
 
 @pytest.fixture
 def storage():

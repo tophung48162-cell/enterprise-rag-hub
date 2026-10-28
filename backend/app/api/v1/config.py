@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_gateway
 from app.db import get_db
-from app.db_models import ModelConfig, OcrResult, Provider
+from app.db_models import KnowledgeBase, ModelConfig, OcrResult, Provider
 from app.errors import ApiError
 from app.providers.gateway import ModelGateway
 from app.schemas import (
@@ -143,8 +143,13 @@ def patch_model(model_id: str, payload: ModelPatch, db: Session = Depends(get_db
 def delete_model(model_id: str, db: Session = Depends(get_db)) -> None:
     model = get_model(db, model_id)
     used = db.scalar(select(func.count(OcrResult.id)).where(OcrResult.model_config_id == model.id))
-    if used:
-        raise ApiError(409, "MODEL_IN_USE", "模型已有处理记录，不能删除")
+    knowledge_used = db.scalar(
+        select(func.count(KnowledgeBase.id)).where(
+            or_(KnowledgeBase.embedding_model_id == model.id, KnowledgeBase.rerank_model_id == model.id)
+        )
+    )
+    if used or knowledge_used:
+        raise ApiError(409, "MODEL_IN_USE", "模型已有知识库配置或处理记录，不能删除")
     db.delete(model)
     db.commit()
 

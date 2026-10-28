@@ -45,6 +45,70 @@ export interface OcrResultDto {
   completed_at: string | null
 }
 
+export interface KnowledgeBaseDto {
+  id: string
+  name: string
+  description: string
+  department: string
+  published: boolean
+  managed: boolean
+  embedding_model_id: string
+  rerank_model_id: string | null
+  chunk_size: number
+  chunk_overlap: number
+  chunk_strategy: 'structure' | 'recursive'
+  document_count: number
+  chunk_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeBaseInput {
+  name: string
+  description: string
+  department: string
+  embedding_model_id: string
+  rerank_model_id?: string | null
+  published?: boolean
+  chunk_size?: number
+  chunk_overlap?: number
+  chunk_strategy?: 'structure' | 'recursive'
+}
+
+export interface DocumentDto {
+  id: string
+  kb_id: string
+  original_name: string
+  mime: string
+  extension: string
+  size_bytes: number
+  sha256: string
+  status: 'uploaded' | 'pending_index' | 'processing' | 'ready' | 'failed'
+  parser_version: string
+  error_code: string | null
+  chunk_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ChunkDto {
+  id: string
+  kb_id: string
+  document_id: string
+  sequence: number
+  title: string
+  text: string
+  page_number: number
+  status: 'pending_index' | 'indexing' | 'ready' | 'failed'
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentPreviewDto {
+  document: DocumentDto
+  chunks: ChunkDto[]
+}
+
 export class HubApiError extends Error {
   constructor(
     message: string,
@@ -110,6 +174,22 @@ export const hubApi = {
   patchModel: (id: string, enabled: boolean) => request<ModelDto>(`/models/${id}`, json('PATCH', { enabled })),
   deleteModel: (id: string) => request<void>(`/models/${id}`, { method: 'DELETE' }),
   testModel: (id: string) => request<TestResultDto>(`/models/${id}/test`, json('POST', {})),
+  listKnowledgeBases: () => requestList<KnowledgeBaseDto>('/knowledge-bases'),
+  createKnowledgeBase: (body: KnowledgeBaseInput) => request<KnowledgeBaseDto>('/knowledge-bases', json('POST', body)),
+  patchKnowledgeBase: (id: string, body: Partial<KnowledgeBaseInput>) =>
+    request<KnowledgeBaseDto>(`/knowledge-bases/${id}`, json('PATCH', body)),
+  deleteKnowledgeBase: (id: string) => request<void>(`/knowledge-bases/${id}`, { method: 'DELETE' }),
+  listDocuments: (knowledgeBaseId: string) => requestList<DocumentDto>(`/knowledge-bases/${knowledgeBaseId}/documents`),
+  uploadDocument: (knowledgeBaseId: string, file: File) => {
+    const body = new FormData()
+    body.append('file', file, file.name)
+    return request<DocumentDto>(`/knowledge-bases/${knowledgeBaseId}/documents`, { method: 'POST', body })
+  },
+  deleteDocument: (id: string) => request<void>(`/documents/${id}`, { method: 'DELETE' }),
+  previewDocument: (id: string, body: { chunk_size: number; chunk_overlap: number; chunk_strategy: 'structure' | 'recursive' }) =>
+    request<DocumentPreviewDto>(`/documents/${id}/preview`, json('POST', body)),
+  listChunks: (documentId: string) => requestList<ChunkDto>(`/documents/${documentId}/chunks`),
+  patchChunk: (id: string, text: string) => request<ChunkDto>(`/chunks/${id}`, json('PATCH', { text })),
   startOcr: (file: File, modelConfigId: string) => {
     const body = new FormData()
     body.append('model_config_id', modelConfigId)
