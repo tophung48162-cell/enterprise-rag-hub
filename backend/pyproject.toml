@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "enterprise-rag-hub-api"
+version = "0.1.0"
+description = "知枢企业知识中台后端服务"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.128,<1",
+  "uvicorn[standard]>=0.38,<1",
+  "pydantic-settings>=2.12,<3",
+  "sqlalchemy>=2.0.44,<3",
+  "alembic>=1.17,<2",
+  "psycopg[binary]>=3.2,<4",
+  "pgvector>=0.4,<1",
+  "boto3>=1.40,<2",
+  "celery>=5.5,<6",
+  "redis>=6.4,<8",
+  "cryptography>=46,<47",
+  "httpx>=0.28,<1",
+  "langchain>=1.0,<2",
+  "langchain-openai>=1.0,<2",
+  "python-multipart>=0.0.20,<1",
+  "pillow>=12,<13",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9,<10",
+  "pytest-asyncio>=1.3,<2",
+  "respx>=0.22,<1",
+  "ruff>=0.14,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*", "workers*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["B008"]

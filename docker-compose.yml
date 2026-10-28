@@ -1,0 +1,124 @@
+name: enterprise-rag-hub
+
+x-backend-environment: &backend-environment
+  HUB_ENVIRONMENT: production
+  HUB_DATABASE_URL: postgresql+psycopg://${HUB_POSTGRES_USER:-hub}:${HUB_POSTGRES_PASSWORD:-hub-development}@postgres:5432/${HUB_POSTGRES_DB:-hub}
+  HUB_REDIS_URL: redis://redis:6379/0
+  HUB_ENCRYPTION_KEY: ${HUB_ENCRYPTION_KEY:-}
+  HUB_S3_ENDPOINT: http://minio:9000
+  HUB_S3_ACCESS_KEY: ${HUB_MINIO_USER:-hub}
+  HUB_S3_SECRET_KEY: ${HUB_MINIO_PASSWORD:-hub-development}
+  HUB_S3_BUCKET: ${HUB_S3_BUCKET:-rag-hub}
+  HUB_CORS_ORIGINS: '${HUB_CORS_ORIGINS:-["http://localhost:8080","http://localhost:4173"]}'
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${HUB_FRONTEND_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment: *backend-environment
+    ports:
+      - "${HUB_API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A workers.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+    environment: *backend-environment
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${HUB_POSTGRES_USER:-hub}
+      POSTGRES_PASSWORD: ${HUB_POSTGRES_PASSWORD:-hub-development}
+      POSTGRES_DB: ${HUB_POSTGRES_DB:-hub}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${HUB_MINIO_USER:-hub}
+      MINIO_ROOT_PASSWORD: ${HUB_MINIO_PASSWORD:-hub-development}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing "local/$${HUB_S3_BUCKET}" &&
+        mc anonymous set none "local/$${HUB_S3_BUCKET}"
+    environment:
+      MINIO_ROOT_USER: ${HUB_MINIO_USER:-hub}
+      MINIO_ROOT_PASSWORD: ${HUB_MINIO_PASSWORD:-hub-development}
+      HUB_S3_BUCKET: ${HUB_S3_BUCKET:-rag-hub}
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  minio-data:
+  redis-data:

@@ -1,8 +1,8 @@
 # 知枢 · 企业知识中台
 
-一个面向企业内部知识服务场景的通用前端原型，覆盖“配置模型 → 构建知识库 → 导入与分块 → 检索测试 → 发布问答应用 → 在线对话 → 运行日志”的完整交互流程。
+面向企业内部知识服务场景的通用知识中台，目标是覆盖“配置模型 → 构建知识库 → 导入与分块 → 检索测试 → 发布问答应用 → 在线对话 → 运行日志”的完整流程。
 
-> **项目边界**：当前仓库是纯前端 Mock 原型，不包含真实后端。文件解析、OCR、Embedding、Rerank、LLM 调用和 Token 用量均为浏览器内演示，不会上传文件或调用收费模型服务。角色选择用于体验不同视图，不是真实登录或服务端鉴权。
+> **当前边界**：React 页面仍是浏览器 Mock 原型，角色选择不是真实登录或服务端鉴权。后端已实现服务商／模型配置、真实模型连接测试、通义云端 OCR、持久化异步任务和容器编排，但前端尚未接入后端；知识解析、向量索引、检索问答和真实日志仍待开发。
 
 ## 功能
 
@@ -24,13 +24,10 @@
 
 ## 技术栈
 
-- React 19
-- TypeScript 5
-- Vite 7
-- React Router 7
-- Ant Design 6
-- Vitest + Testing Library
-- Playwright
+- 前端：React 19、TypeScript 5、Vite 7、React Router 7、Ant Design 6
+- 后端：FastAPI、SQLAlchemy 2、Alembic、LangChain Python
+- 数据与任务：PostgreSQL／pgvector、MinIO、Redis、Celery
+- 部署与测试：Docker Compose、Vitest、Playwright、pytest、Ruff
 
 ## 本地运行
 
@@ -82,18 +79,21 @@ npm run preview
 
 数据按浏览器 Origin 隔离，不会跨设备或跨端口共享。Markdown 和 CSV 可在浏览器读取文本；其他格式使用明确标记的示例解析结果。API Key 不会保存到浏览器存储。
 
-## 后端对接方向
+## 后端与完整部署
 
-完整的技术选型对比、架构、数据模型、API、异步任务、版本化索引、LangChain 问答、日志和验收设计见 [后端 1.0 设计](docs/backend-design-v1.md)。后端尚未实现，需先确认文档中的推荐组合。
+技术选型和完整架构见 [后端 1.0 设计](docs/backend-design-v1.md)，本地开发、接口和测试说明见 [后端 README](backend/README.md)。
 
-后续可将浏览器 Mock 逐步替换为类型一致的 API Client，保留现有加载、空态、失败重试、无权限和待索引状态。后端将提供：
+已确认并实现的第一阶段组合为 FastAPI、SQLAlchemy／Alembic、PostgreSQL、MinIO、Redis／Celery 和 LangChain。当前可用接口包括服务商与模型配置、模型连接测试，以及通义 OCR 的同步识别、异步入队、状态查询和失败重试。异步状态持久化在数据库，Redis 不是唯一任务记录。
 
-- 知识库、原始文件、解析产物、分块和索引版本接口。
-- 异步解析／OCR／索引任务与失败重试。
-- 真实向量召回、过滤、Rerank 和来源元数据。
-- 基于 LangChain 的检索增强生成与流式事件。
-- OpenRouter、AIHubmix、通义百炼的模型网关和服务端密钥管理。
-- 真实 Token、首字／总耗时、错误状态和查询日志。
+```bash
+cp .env.example .env
+# 按 .env 中的说明生成并填写 HUB_ENCRYPTION_KEY
+docker compose up --build
+```
+
+完整部署将启动前端、API、独立 Worker、PostgreSQL／pgvector、MinIO 和 Redis。当前开发机没有 Docker，以上编排只做了静态校验；真实云模型也需要配置有效账号后另行联调。
+
+后续阶段包括知识与文档接口、Word／PDF／表格解析、版本化向量索引、真实检索与 Rerank、LangChain SSE 问答和运行日志。前端会通过 API Client 逐步替换 Mock，保留已有加载、空态、失败重试和无权限交互。
 
 ## 主要源码
 

@@ -11,6 +11,17 @@ coverage/
 playwright-report/
 test-results/
 
+# Python 后端
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+backend/.pytest_cache/
+
 # 本地工具、授权凭据、托管标识和交接记录不进入公开仓库
 .tools/
 .openai/
