@@ -330,3 +330,41 @@ test('多知识库问答日志保留全部来源并可按任一知识库筛选',
   await page.locator('.ant-select-dropdown:visible .ant-select-item-option[title="企业制度与员工服务"]').click()
   await expect(row).toBeVisible()
 })
+
+test('真实 Markdown 与 CSV 文件可通过选择、校验、预览、构建和检索闭环', async ({ page }) => {
+  await page.goto('/knowledge')
+  await page.getByRole('button', { name: /新建知识库/ }).click()
+  await page.getByPlaceholder('例如：产品与技术文档').fill('真实文件验收知识库')
+  await page.getByRole('button', { name: '创建知识库', exact: true }).click()
+  await page.locator('.knowledge-content .page-heading').getByRole('button', { name: /导入知识/ }).click()
+
+  const drawer = page.locator('.ant-drawer:visible')
+  await drawer.locator('input[type="file"]').setInputFiles([
+    {
+      name: '验收笔记.md',
+      mimeType: 'text/markdown',
+      buffer: Buffer.from('# 曜石项目\n\n曜石项目的验收口令是“星河可信检索”，用于验证真实 Markdown 内容进入分块。'),
+    },
+    {
+      name: '验收清单.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('项目,负责人,验收标准\n曜石项目,林岚,星河可信检索'),
+    },
+    { name: '不支持的程序.exe', mimeType: 'application/octet-stream', buffer: Buffer.from('invalid') },
+  ])
+  await expect(drawer.locator('.import-footer')).toContainText('2 个有效文件')
+  await expect(drawer).toContainText('不支持此文件格式')
+  await drawer.getByRole('button', { name: '移除不支持的程序.exe', exact: true }).click()
+  await drawer.getByRole('button', { name: '下一步', exact: true }).click()
+  await drawer.getByRole('button', { name: '生成分块预览', exact: true }).click()
+  await expect(drawer.locator('.import-step')).toContainText('星河可信检索')
+  await expect(drawer.locator('.import-step')).toContainText('林岚')
+  await drawer.getByRole('button', { name: '下一步', exact: true }).click()
+  await drawer.getByRole('button', { name: '确认并构建索引', exact: true }).click()
+  await expect(page.locator('.workspace-summary')).toContainText('2 份已索引', { timeout: 20_000 })
+
+  await page.getByRole('button', { name: /检索测试/ }).click()
+  await page.getByPlaceholder('输入一个真实业务问题').fill('曜石项目的验收口令是什么？')
+  await page.locator('.retrieval-layout').getByRole('button', { name: /测试检索/ }).click()
+  await expect(page.locator('.retrieval-result').first()).toContainText('星河可信检索')
+})
