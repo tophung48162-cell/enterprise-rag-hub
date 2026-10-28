@@ -1,5 +1,6 @@
 import time
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any
 
 import httpx
@@ -23,6 +24,12 @@ class EmbeddingResult:
     duration_ms: int
     input_tokens: int | None = None
     usage_source: str = "unavailable"
+
+
+@dataclass
+class RerankResult:
+    scores: list[tuple[int, float]]
+    duration_ms: int
 
 
 def _endpoint(base_url: str, path: str) -> str:
@@ -92,6 +99,60 @@ class ModelGateway:
             ) from exc
         duration = round((time.perf_counter() - started) * 1000)
         return EmbeddingResult(vectors=vectors, duration_ms=duration)
+
+    async def rerank(
+        self,
+        provider: Provider,
+        model: ModelConfig,
+        api_key: str,
+        query: str,
+        documents: list[str],
+        top_n: int,
+    ) -> RerankResult:
+        if not documents:
+            return RerankResult(scores=[], duration_ms=0)
+        try:
+            payload, duration = await self._request(
+                provider,
+                "POST",
+                "reranks" if provider.kind == "tongyi" else "rerank",
+                api_key,
+                json={
+                    "model": model.remote_model_id,
+                    "query": query,
+                    "documents": documents,
+                    "top_n": min(top_n, len(documents)),
+                },
+            )
+        except ApiError as exc:
+            raise ApiError(
+                502,
+                "RERANK_PROVIDER_FAILED",
+                "Rerank 服务商调用失败，请检查模型配置后重试",
+                retryable=exc.retryable,
+            ) from exc
+        items = payload.get("results")
+        if items is None and isinstance(payload.get("output"), dict):
+            items = payload["output"].get("results")
+        if not isinstance(items, list):
+            raise ApiError(502, "RERANK_RESPONSE_INVALID", "Rerank 服务商返回格式不正确")
+        scores: list[tuple[int, float]] = []
+        seen: set[int] = set()
+        for item in items:
+            index = item.get("index") if isinstance(item, dict) else None
+            score = item.get("relevance_score") if isinstance(item, dict) else None
+            if (
+                type(index) is not int
+                or isinstance(score, bool)
+                or not isinstance(score, int | float)
+                or not isfinite(score)
+                or not 0 <= index < len(documents)
+                or index in seen
+            ):
+                raise ApiError(502, "RERANK_RESPONSE_INVALID", "Rerank 服务商返回格式不正确")
+            scores.append((index, float(score)))
+            seen.add(index)
+        return RerankResult(scores=scores, duration_ms=duration)
 
     async def test_provider(self, provider: Provider, api_key: str) -> GatewayResult:
         _, duration = await self._request(provider, "GET", "models", api_key)

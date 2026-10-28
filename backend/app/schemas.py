@@ -148,6 +148,35 @@ class IndexVersionOut(BaseModel):
     activated_at: datetime | None
 
 
+class RetrievalRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    candidate_k: int = Field(default=20, ge=1, le=100)
+    similarity_threshold: float = Field(default=0.35, ge=0, le=1)
+    rerank: bool = True
+
+
+class RetrievalResultOut(BaseModel):
+    chunk_id: str
+    document_id: str
+    document_name: str
+    sequence: int
+    title: str
+    text: str
+    page_number: int
+    vector_score: float
+    rerank_score: float | None
+
+
+class RetrievalOut(BaseModel):
+    index_version_id: str
+    results: list[RetrievalResultOut]
+    candidate_count: int
+    duration_ms: int
+    embedding_duration_ms: int
+    rerank_duration_ms: int | None
+
+
 class DocumentOut(BaseModel):
     id: str
     kb_id: str

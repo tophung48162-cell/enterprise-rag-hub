@@ -528,6 +528,15 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
     const versions = [failedVersion, currentVersion].filter(Boolean)
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(versions) })
   })
+  await page.route('**/api/v1/knowledge-bases/kb-e2e/retrieval', async (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ query: '报销需要哪些材料？', top_k: 5, candidate_k: 20, rerank: true })
+    await route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        index_version_id: 'index-e2e', candidate_count: 2, duration_ms: 36, embedding_duration_ms: 12, rerank_duration_ms: 8,
+        results: [{ chunk_id: 'chunk-e2e-1', document_id: 'doc-e2e', document_name: '联机研发规范.md', sequence: 1, title: '研发规范 · 验收要求', text: '人工验收修订：服务端分块内容已更新。', page_number: 1, vector_score: 0.82, rerank_score: 0.96 }],
+      }),
+    })
+  })
 
   await page.goto('/knowledge')
   await expect(page.locator('.page > .ant-alert')).toContainText('已连接 FastAPI')
@@ -574,6 +583,17 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
   const errors = browserErrors.get(page) || []
   expect(errors.some((message) => message.includes('503 (Service Unavailable)'))).toBe(true)
   browserErrors.set(page, errors.filter((message) => !message.includes('503 (Service Unavailable)')))
+
+  await page.getByRole('button', { name: /检索测试/ }).click()
+  await page.getByLabel('真实检索问题').fill('报销需要哪些材料？')
+  await page.getByRole('button', { name: /测试真实检索/ }).click()
+  await expect(page.locator('.retrieval-result')).toContainText('人工验收修订：服务端分块内容已更新。')
+  await expect(page.locator('.retrieval-result')).toContainText('向量 0.820')
+  await expect(page.locator('.retrieval-result')).toContainText('重排 0.960')
+  await expect(page.locator('.section-title.no-top')).toContainText('2 个候选')
+  await page.locator('.retrieval-result').getByRole('button', { name: '查看原文' }).click()
+  await expect(page.locator('.ant-drawer:visible')).toContainText('活动索引原文快照')
+  await expect(page.locator('.ant-drawer:visible')).toContainText('人工验收修订：服务端分块内容已更新。')
 })
 
 test('图片经真实 OCR 异步链路识别后才进入分块并保留来源', async ({ page }) => {

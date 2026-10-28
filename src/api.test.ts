@@ -105,6 +105,17 @@ describe('FastAPI client contracts', () => {
     expect(fetchMock.mock.calls[0][1].method).toBe('POST')
   })
 
+  it('retrieves active index snapshots with vector and rerank contracts', async () => {
+    const response = {
+      index_version_id: 'index-1', candidate_count: 2, duration_ms: 36, embedding_duration_ms: 12, rerank_duration_ms: 8,
+      results: [{ chunk_id: 'chunk-1', document_id: 'doc-1', document_name: '员工指南.md', sequence: 2, title: '报销申请', text: '需要合规发票', page_number: 2, vector_score: 0.82, rerank_score: 0.96 }],
+    }
+    fetchMock.mockResolvedValueOnce(jsonResponse(response))
+    await expect(hubApi.retrieveKnowledge('kb-1', { query: '报销材料', top_k: 1, candidate_k: 20, similarity_threshold: 0.35, rerank: true })).resolves.toEqual(response)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/knowledge-bases/kb-1/retrieval')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ query: '报销材料', top_k: 1, candidate_k: 20, similarity_threshold: 0.35, rerank: true })
+  })
+
   it('polls OCR from queued to ready and returns recognized text', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(ocrResult('queued'), 202)).mockResolvedValueOnce(jsonResponse(ocrResult('ready')))
     const file = new File(['image'], '流程图.png', { type: 'image/png' })

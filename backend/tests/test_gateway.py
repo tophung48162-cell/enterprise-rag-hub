@@ -40,6 +40,51 @@ async def test_rerank_uses_provider_specific_endpoint(kind, expected_path):
 
 
 @pytest.mark.asyncio
+async def test_rerank_reads_tongyi_nested_results():
+    provider, model = make_provider_model("Rerank", "tongyi")
+    with respx.mock:
+        route = respx.post("https://provider.example.com/v1/reranks").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "output": {
+                        "results": [{"index": 1, "relevance_score": 0.95}, {"index": 0, "relevance_score": 0.2}]
+                    }
+                },
+            )
+        )
+        result = await ModelGateway().rerank(provider, model, "secret", "查询", ["甲", "乙"], 2)
+    assert route.called
+    assert result.scores == [(1, 0.95), (0, 0.2)]
+
+
+@pytest.mark.asyncio
+async def test_rerank_rejects_invalid_result_index():
+    provider, model = make_provider_model("Rerank", "openrouter")
+    with respx.mock:
+        respx.post("https://provider.example.com/v1/rerank").mock(
+            return_value=httpx.Response(200, json={"results": [{"index": 8, "relevance_score": 0.9}]})
+        )
+        with pytest.raises(ApiError) as caught:
+            await ModelGateway().rerank(provider, model, "secret", "查询", ["甲"], 1)
+    assert caught.value.code == "RERANK_RESPONSE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_rerank_provider_failure_is_sanitized():
+    provider, model = make_provider_model("Rerank", "openrouter")
+    with respx.mock:
+        respx.post("https://provider.example.com/v1/rerank").mock(
+            return_value=httpx.Response(500, json={"error": "rerank-secret"})
+        )
+        with pytest.raises(ApiError) as caught:
+            await ModelGateway().rerank(provider, model, "rerank-secret", "查询", ["甲"], 1)
+    assert caught.value.code == "RERANK_PROVIDER_FAILED"
+    assert caught.value.retryable is True
+    assert "rerank-secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_is_retryable_and_does_not_leak_key():
     provider, model = make_provider_model("Embedding")
     with respx.mock:

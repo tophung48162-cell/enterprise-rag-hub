@@ -2,14 +2,14 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { Dispatch, ReactNode, SetStateAction } from 'react'
 import { Alert, App as AntApp, Avatar, Badge, Breadcrumb, Button, Card, Checkbox, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Progress, Radio, Result, Select, Space, Spin, Statistic, Steps, Switch, Table, Tabs, Tag, Tooltip, Upload } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { ApiOutlined, AppstoreOutlined, ArrowLeftOutlined, ArrowRightOutlined, AuditOutlined, BookOutlined, CheckCircleOutlined, CloudUploadOutlined, CopyOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, FileExcelOutlined, FileImageOutlined, FilePdfOutlined, FileTextOutlined, FolderOpenOutlined, HistoryOutlined, InboxOutlined, InfoCircleOutlined, LinkOutlined, MessageOutlined, NodeIndexOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SaveOutlined, ScissorOutlined, SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
+import { ApiOutlined, AppstoreOutlined, ArrowLeftOutlined, ArrowRightOutlined, AuditOutlined, BookOutlined, CheckCircleOutlined, CloudUploadOutlined, CopyOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, EyeOutlined, FileExcelOutlined, FileImageOutlined, FilePdfOutlined, FileTextOutlined, FolderOpenOutlined, HistoryOutlined, InboxOutlined, InfoCircleOutlined, LinkOutlined, MessageOutlined, NodeIndexOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SaveOutlined, ScissorOutlined, SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { Role } from './types'
 import { canAccessPath, getAccessibleMenuItems, getDefaultRoute, normalizeRole, ROLE_LABELS, ROLE_OPTIONS } from './permissions'
 import { advanceTasks, detectKind, getModelDependents, logKnowledgeIds, readWorkspace, rechunkKnowledge, retrieveChunks, shouldReadFileContent, splitContent, STORE_KEY, timestamp, uid, validateFiles } from './workspace'
 import type { BuildState, HubAssistant, HubChunk, HubDocument, HubKnowledge, HubLog, HubModel, HubProvider, HubSession, HubState } from './workspace'
 import { apiErrorMessage, hubApi, recognizeOcr } from './api'
-import type { ChunkDto, DocumentDto, IndexVersionDto, ModelDto, ProviderDto } from './api'
+import type { ChunkDto, DocumentDto, IndexVersionDto, ModelDto, ProviderDto, RetrievalResponseDto } from './api'
 
 type ContextValue = {
   state: HubState
@@ -157,7 +157,7 @@ export default function HubApp() {
     </aside>
     <div className="hub-frame">
       <header className="global-header"><div className="header-left"><Button className="mobile-nav" type="text" icon={<AppstoreOutlined />} aria-label="展开模块导航" onClick={() => setNavOpen(!navOpen)} /><Breadcrumb items={[{ title: '企业知识中台' }, { title: activeMenu?.label || '工作台' }]} /></div><Space size={16}><span className="role-note">体验视角 · 非鉴权</span><Select value={role} options={ROLE_OPTIONS} onChange={changeRole} aria-label="切换体验角色" className="role-select" prefix={<UserOutlined />} /></Space></header>
-      <div className="prototype-ribbon"><InfoCircleOutlined /><span>1.0 联调版：模型配置、图片 OCR、Markdown 分块与版本化向量索引已接入真实接口；检索问答及其他文档解析仍未接入。</span><Tag variant="filled">V2</Tag></div>
+      <div className="prototype-ribbon"><InfoCircleOutlined /><span>1.0 联调版：模型配置、图片 OCR、Markdown 分块、向量索引与检索 Rerank 已接入真实接口；在线问答及其他文档解析仍未接入。</span><Tag variant="filled">V2</Tag></div>
       <main className="hub-main"><Routes>
         <Route path="/" element={<Navigate to="/workbench" replace />} />
         <Route path="/workbench" element={<Workbench />} />
@@ -235,7 +235,7 @@ function KnowledgeList() {
     finally { setCreating(false) }
   }
   return <div className="page"><Heading title="知识库" description="集中管理企业知识，完成文件接入、解析分块与索引构建。" actions={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建知识库</Button>} />
-    <Alert className="space-bottom" showIcon type={knowledgeConnected ? 'success' : knowledgeLoading ? 'info' : 'warning'} title={knowledgeConnected ? '已连接 FastAPI · 知识库、Markdown、分块与向量索引使用服务端数据' : knowledgeLoading ? '正在读取知识库数据…' : '后端未连接 · 当前为本机知识库演示'} description={knowledgeConnected ? '分块完成后可创建真实 Embedding 索引版本；检索、问答和其他文档解析尚未接入。' : '连接后端并配置 Embedding 模型后，可创建真实知识库。'} />
+    <Alert className="space-bottom" showIcon type={knowledgeConnected ? 'success' : knowledgeLoading ? 'info' : 'warning'} title={knowledgeConnected ? '已连接 FastAPI · 知识库、Markdown、分块与向量索引使用服务端数据' : knowledgeLoading ? '正在读取知识库数据…' : '后端未连接 · 当前为本机知识库演示'} description={knowledgeConnected ? '分块后可创建 Embedding 索引并测试真实检索与 Rerank；在线问答和其他文档解析尚未接入。' : '连接后端并配置 Embedding 模型后，可创建真实知识库。'} />
     <div className="knowledge-toolbar"><Space wrap><Input prefix={<SearchOutlined />} placeholder="搜索知识库名称" value={search} onChange={(e) => setSearch(e.target.value)} allowClear /><Select aria-label="按部门筛选" value={department} onChange={setDepartment} options={[{ value: 'all', label: '全部部门' }, ...[...new Set(accessibleKbs(state, role).map((kb) => kb.department))].map((value) => ({ value, label: value }))]} /></Space><span>{role === 'manager' ? '我管理的知识库' : '全部知识库'} <b>{kbs.length}</b></span></div>
     <div className="knowledge-grid">{kbs.map((kb) => { const docs = state.documents.filter((d) => d.kbId === kb.id); const chunks = state.chunks.filter((c) => c.kbId === kb.id); return <article key={kb.id} className="knowledge-card"><div className="knowledge-card-head"><span className={`kb-avatar color-${kb.color}`}><DatabaseOutlined /></span><Tag color={docs.some((d) => d.state === 'processing') ? 'processing' : docs.some((d) => d.state === 'ready') ? 'success' : docs.length ? 'warning' : 'default'}>{docs.some((d) => d.state === 'processing') ? '构建中' : docs.some((d) => d.state === 'ready') ? knowledgeConnected ? '已索引' : '可检索' : docs.length ? '待索引' : '待导入'}</Tag></div><h3><button onClick={() => navigate(`/knowledge/${kb.id}`)}>{kb.name}</button></h3><p>{kb.description}</p><div className="kb-labels"><Tag variant="filled">{kb.department}</Tag><span>{kb.published ? '已开放问答' : '未发布'}</span></div><div className="kb-counts"><span><FileTextOutlined /> <b>{docs.length}</b> 份文档</span><span><ScissorOutlined /> <b>{chunks.length}</b> 个分块</span></div><div className="kb-model"><NodeIndexOutlined /><span>{kb.embedding}</span><Tooltip title="知识库级索引模型"><InfoCircleOutlined /></Tooltip></div><div className="knowledge-card-footer"><span>{kb.updated}</span><Button type="link" onClick={() => navigate(`/knowledge/${kb.id}`)}>进入知识库 <ArrowRightOutlined /></Button></div></article> })}<button className="create-kb-card" onClick={openCreate}><span><PlusOutlined /></span><b>创建新的知识库</b><p>为一个业务领域建立知识空间</p></button></div>
     {!kbs.length && search && <Empty description="没有找到匹配的知识库" />}
@@ -395,8 +395,66 @@ function RetrievalTest({ kb }: { kb: HubKnowledge }) {
   const { state, knowledgeConnected } = useHub(); const [query, setQuery] = useState(''); const [topK, setTopK] = useState(5); const [threshold, setThreshold] = useState(0.35); const [rerank, setRerank] = useState(true); const [loading, setLoading] = useState(false); const [results, setResults] = useState<ReturnType<typeof retrieveChunks> | null>(null); const [source, setSource] = useState<HubChunk | null>(null); const timer = useRef<number>(0)
   useEffect(() => () => window.clearTimeout(timer.current), [])
   const run = (value = query) => { if (!value.trim() || loading) return; setQuery(value); setLoading(true); timer.current = window.setTimeout(() => { setResults(retrieveChunks(state, [kb.id], value, topK, threshold, rerank)); setLoading(false) }, 650) }
-  if (knowledgeConnected) return <Alert type="info" showIcon title="真实向量检索尚未接入" description="版本化 Embedding 索引已可构建，但检索 API 尚未开放。为避免把本地文本匹配误当成真实召回，联机模式下暂不运行演示检索。" />
+  if (knowledgeConnected) return <RemoteRetrievalTest kb={kb} />
   return <div className="retrieval-layout"><Card title={<><SearchOutlined /> 检索参数</>}><label className="field-label">测试问题</label><Input.TextArea value={query} onChange={(e) => setQuery(e.target.value)} rows={4} placeholder="输入一个真实业务问题" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); run() } }} /><Button className="space-top" block type="primary" icon={<SearchOutlined />} loading={loading} disabled={!query.trim()} onClick={() => run()}>测试检索</Button><Divider /><label className="setting-row">召回数量 Top K<InputNumber min={1} max={20} value={topK} onChange={(v) => setTopK(v || 5)} /></label><label className="setting-row">最低相似度<InputNumber min={0} max={1} step={0.05} value={threshold} onChange={(v) => setThreshold(v || 0)} /></label><label className="setting-row">启用 Rerank<Switch checked={rerank} onChange={setRerank} /></label><div className="model-footnote"><NodeIndexOutlined /> {kb.embedding}<br /><NodeIndexOutlined /> {kb.rerank || '未设置重排模型'}</div><small className="muted">原型使用文本匹配模拟召回，评分仅供交互验收。</small></Card><div><div className="section-title no-top"><h3>检索结果</h3><span>{results ? `${results.length} 个命中 · ${rerank ? '已重排' : '未重排'} · 0.65 秒` : '等待测试'}</span></div>{loading ? <div className="loading-state"><Spin /><p>正在召回并整理相关片段…</p></div> : results === null ? <div className="retrieval-empty"><span><SearchOutlined /></span><h3>验证知识是否能被准确找到</h3><p>输入问题，检查命中文本、原文位置和检索评分。</p><Button onClick={() => run(kb.id === 'cuisine' ? '过桥米线有哪些主要食材？' : '差旅报销需要哪些材料？')}>试一试：{kb.id === 'cuisine' ? '过桥米线有哪些主要食材？' : '差旅报销需要哪些材料？'}</Button></div> : results.length ? results.map((chunk, i) => <Card className="retrieval-result" key={chunk.id}><div className="retrieval-result-top"><span className="rank">{i + 1}</span><div><b>{state.documents.find((d) => d.id === chunk.documentId)?.name}</b><small>第 {chunk.page} 页 · {chunk.id}</small></div><Tag color="blue">{chunk.score.toFixed(2)}</Tag></div><h4>{chunk.title}</h4><p>{chunk.text}</p><div className="result-footer"><Space size={6}><Tag>向量 {chunk.vectorScore.toFixed(2)}</Tag>{chunk.rerankScore !== null && <Tag color="cyan">重排 {chunk.rerankScore.toFixed(2)}</Tag>}</Space><Button type="link" icon={<FileTextOutlined />} onClick={() => setSource(chunk)}>查看来源</Button></div></Card>) : <Empty description="没有找到足够依据，请调整问题或降低相似度阈值" />}</div><CitationDrawer chunk={source} onClose={() => setSource(null)} /></div>
+}
+
+function RemoteRetrievalTest({ kb }: { kb: HubKnowledge }) {
+  const { remoteIndexVersions, remoteModels } = useHub()
+  const [query, setQuery] = useState('')
+  const [topK, setTopK] = useState(5)
+  const [candidateK, setCandidateK] = useState(20)
+  const [threshold, setThreshold] = useState(0.35)
+  const [rerank, setRerank] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [response, setResponse] = useState<RetrievalResponseDto | null>(null)
+  const [error, setError] = useState('')
+  const [source, setSource] = useState<RetrievalResponseDto['results'][number] | null>(null)
+  const activeVersion = (remoteIndexVersions[kb.id] || []).find((version) => version.id === kb.activeIndexVersionId && version.status === 'active')
+  const activeEmbedding = remoteModels.find((model) => model.id === activeVersion?.embedding_model_id)?.remote_model_id || kb.embedding
+  const run = async (value = query) => {
+    if (!value.trim() || loading) return
+    if (!activeVersion) { setError('请先完成一个活动索引版本，再测试真实检索'); return }
+    setQuery(value)
+    setLoading(true)
+    setError('')
+    try {
+      const result = await hubApi.retrieveKnowledge(kb.id, {
+        query: value.trim(), top_k: topK, candidate_k: candidateK,
+        similarity_threshold: threshold, rerank: rerank && Boolean(kb.rerank),
+      })
+      setResponse(result)
+    } catch (cause) {
+      setError(apiErrorMessage(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+  return <div className="retrieval-layout">
+    <Card title={<><SearchOutlined /> 检索参数</>}>
+      {!activeVersion && <Alert className="space-bottom" type="warning" showIcon title="尚无活动索引版本" description="请先在文件与任务中完成索引构建。" />}
+      {error && <Alert className="space-bottom" type="error" showIcon title="检索失败" description={error} />}
+      <label className="field-label">测试问题</label>
+      <Input.TextArea aria-label="真实检索问题" value={query} onChange={(event) => setQuery(event.target.value)} rows={4} placeholder="输入一个真实业务问题" onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void run() } }} />
+      <Button className="space-top" block type="primary" icon={<SearchOutlined />} loading={loading} disabled={!query.trim() || !activeVersion} onClick={() => { void run() }}>测试真实检索</Button>
+      <Divider />
+      <label className="setting-row">候选数量<InputNumber aria-label="候选数量" min={1} max={100} value={candidateK} onChange={(value) => setCandidateK(value || 20)} /></label>
+      <label className="setting-row">最终返回 Top K<InputNumber aria-label="最终返回 Top K" min={1} max={20} value={topK} onChange={(value) => setTopK(value || 5)} /></label>
+      <label className="setting-row">最低相似度<InputNumber aria-label="真实最低相似度" min={0} max={1} step={0.05} value={threshold} onChange={(value) => setThreshold(value ?? 0)} /></label>
+      <label className="setting-row">启用 Rerank<Switch aria-label="启用真实 Rerank" checked={rerank && Boolean(kb.rerank)} disabled={!kb.rerank} onChange={setRerank} /></label>
+      <div className="model-footnote"><NodeIndexOutlined /> 活动版本 Embedding：{activeEmbedding}<br /><NodeIndexOutlined /> {kb.rerank || '未设置重排模型'}</div>
+      <small className="muted">使用 pgvector 余弦相似度召回活动版本快照；Rerank 在候选池内排序后返回 Top K。</small>
+    </Card>
+    <div>
+      <div className="section-title no-top"><h3>真实检索结果</h3><span>{response ? `${response.results.length} 个命中 · ${response.candidate_count} 个候选 · ${response.rerank_duration_ms !== null ? '已重排' : '未重排'} · ${(response.duration_ms / 1000).toFixed(2)} 秒` : '等待测试'}</span></div>
+      {loading ? <div className="loading-state"><Spin /><p>正在生成查询向量并召回活动索引…</p></div> : response === null ? <div className="retrieval-empty"><span><SearchOutlined /></span><h3>验证真实向量召回与重排</h3><p>结果来自当前活动索引，不使用浏览器文本匹配。</p><Button disabled={!activeVersion} onClick={() => { void run('报销需要哪些材料？') }}>试一试：报销需要哪些材料？</Button></div> : response.results.length ? response.results.map((chunk, index) => <Card className="retrieval-result" key={chunk.chunk_id}>
+        <div className="retrieval-result-top"><span className="rank">{index + 1}</span><div><b>{chunk.document_name}</b><small>分块序号 {chunk.page_number} · {chunk.chunk_id}</small></div><Space><Tag color="blue">向量 {chunk.vector_score.toFixed(3)}</Tag>{chunk.rerank_score !== null && <Tag color="green">重排 {chunk.rerank_score.toFixed(3)}</Tag>}</Space></div>
+        <h4>{chunk.title}</h4><p>{chunk.text}</p>
+        <div className="result-footer"><span>活动版本 {response.index_version_id.slice(-8)}</span><Space><Button type="link" size="small" icon={<EyeOutlined />} onClick={() => setSource(chunk)}>查看原文</Button><Button aria-label={`复制检索结果 ${index + 1}`} type="text" size="small" icon={<CopyOutlined />} onClick={() => { void navigator.clipboard.writeText(chunk.text) }} /></Space></div>
+      </Card>) : <Empty description="没有达到相似度阈值的片段，请调整问题或阈值" />}
+    </div>
+    <Drawer title="活动索引原文快照" open={Boolean(source)} size={560} onClose={() => setSource(null)}>{source && <><div className="source-heading"><FileTextOutlined /><div><h3>{source.document_name}</h3><p>{source.title} · 分块序号 {source.page_number}</p></div></div><Alert type="info" showIcon title="以下内容取自本次活动索引版本" description="后续人工编辑不会改写历史向量快照；创建并激活新版本后才会使用最新文本。" /><article className="source-block"><Tag>向量 {source.vector_score.toFixed(3)}</Tag>{source.rerank_score !== null && <Tag color="green">重排 {source.rerank_score.toFixed(3)}</Tag>}<h4>{source.title}</h4><p>{source.text}</p></article></>}</Drawer>
+  </div>
 }
 
 function KnowledgeSettings({ kb, open, onClose }: { kb: HubKnowledge; open: boolean; onClose: () => void }) {

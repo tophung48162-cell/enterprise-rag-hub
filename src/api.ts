@@ -86,6 +86,35 @@ export interface IndexVersionDto {
   activated_at: string | null
 }
 
+export interface RetrievalResultDto {
+  chunk_id: string
+  document_id: string
+  document_name: string
+  sequence: number
+  title: string
+  text: string
+  page_number: number
+  vector_score: number
+  rerank_score: number | null
+}
+
+export interface RetrievalResponseDto {
+  index_version_id: string
+  results: RetrievalResultDto[]
+  candidate_count: number
+  duration_ms: number
+  embedding_duration_ms: number
+  rerank_duration_ms: number | null
+}
+
+export interface RetrievalInput {
+  query: string
+  top_k: number
+  candidate_k: number
+  similarity_threshold: number
+  rerank: boolean
+}
+
 export interface KnowledgeBaseInput {
   name: string
   description: string
@@ -207,6 +236,8 @@ export const hubApi = {
   createIndexVersion: (knowledgeBaseId: string) =>
     request<IndexVersionDto>(`/knowledge-bases/${knowledgeBaseId}/index-versions`, { method: 'POST' }),
   getIndexVersion: (id: string) => request<IndexVersionDto>(`/index-versions/${id}`),
+  retrieveKnowledge: (knowledgeBaseId: string, body: RetrievalInput) =>
+    request<RetrievalResponseDto>(`/knowledge-bases/${knowledgeBaseId}/retrieval`, json('POST', body)),
   listDocuments: (knowledgeBaseId: string) => requestList<DocumentDto>(`/knowledge-bases/${knowledgeBaseId}/documents`),
   uploadDocument: (knowledgeBaseId: string, file: File) => {
     const body = new FormData()
