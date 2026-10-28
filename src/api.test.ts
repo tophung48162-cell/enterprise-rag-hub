@@ -83,6 +83,28 @@ describe('FastAPI client contracts', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ text: '人工修订正文' })
   })
 
+  it('creates and queries immutable index versions with backend contracts', async () => {
+    const version = {
+      id: 'index-1', kb_id: 'kb-1', embedding_model_id: 'embed-1', dimensions: 1024,
+      chunk_size: 800, chunk_overlap: 120, chunk_strategy: 'structure', status: 'queued', progress: 0,
+      total_chunks: 2, embedded_chunks: 0, input_tokens: null, usage_source: 'unavailable', duration_ms: null,
+      error_code: null, created_at: '2026-10-28T00:00:00Z', started_at: null, completed_at: null, activated_at: null,
+    }
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(version, 202))
+      .mockResolvedValueOnce(jsonResponse([version]))
+      .mockResolvedValueOnce(jsonResponse({ ...version, status: 'active', progress: 100 }))
+    await expect(hubApi.createIndexVersion('kb-1')).resolves.toMatchObject({ id: 'index-1', status: 'queued' })
+    await expect(hubApi.listIndexVersions('kb-1')).resolves.toHaveLength(1)
+    await expect(hubApi.getIndexVersion('index-1')).resolves.toMatchObject({ status: 'active', progress: 100 })
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/knowledge-bases/kb-1/index-versions',
+      '/api/v1/knowledge-bases/kb-1/index-versions',
+      '/api/v1/index-versions/index-1',
+    ])
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+  })
+
   it('polls OCR from queued to ready and returns recognized text', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(ocrResult('queued'), 202)).mockResolvedValueOnce(jsonResponse(ocrResult('ready')))
     const file = new File(['image'], '流程图.png', { type: 'image/png' })

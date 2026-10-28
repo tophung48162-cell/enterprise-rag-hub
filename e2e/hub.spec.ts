@@ -10,6 +10,9 @@ test.beforeEach(async ({ page }) => {
   for (const path of ['providers', 'models', 'knowledge-bases']) {
     await page.route(`**/api/v1/${path}`, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: 'null' }))
   }
+  await page.route('**/api/v1/knowledge-bases/*/index-versions', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
+  )
 })
 
 test.afterEach(async ({ page }) => {
@@ -78,7 +81,7 @@ test('新建知识库、示例导入、索引、检索、分块编辑和重建�
   await page.getByLabel('分块正文').fill('验收修订内容：报销必须附带验收专用凭证。')
   await page.getByRole('button', { name: '保存修改', exact: true }).click()
   await expect(page.locator('.knowledge-content > .ant-alert')).toContainText('等待重新索引')
-  await page.getByRole('button', { name: '重建待处理索引', exact: true }).click()
+  await page.getByRole('button', { name: /构建新索引版本/ }).click()
   await expect(page.locator('.knowledge-content > .ant-alert')).toContainText('所有分块均已索引', { timeout: 20_000 })
   await expect(page.locator('.chunk-item').first()).toContainText('验收专用凭证')
 })
@@ -432,10 +435,13 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
   let uploaded = false
   let documentStatus = 'uploaded'
   let editedText = ''
+  let queueFailure = false
+  let indexReads = 0
+  let activeVersionId: string | null = null
   const knowledge = {
     id: 'kb-e2e', name: '联机验收知识库', description: '真实 API 闭环', department: '企业通用', published: false, managed: true,
     embedding_model_id: 'embed-e2e', rerank_model_id: 'rank-e2e', chunk_size: 800, chunk_overlap: 120, chunk_strategy: 'structure',
-    created_at: '2026-10-28T00:00:00Z', updated_at: '2026-10-28T00:00:00Z',
+    active_index_version_id: null, created_at: '2026-10-28T00:00:00Z', updated_at: '2026-10-28T00:00:00Z',
   }
   const document = () => ({
     id: 'doc-e2e', kb_id: knowledge.id, original_name: '联机研发规范.md', mime: 'text/markdown', extension: '.md', size_bytes: 96, sha256: 'e2e-sha',
@@ -446,12 +452,23 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
     id: `chunk-e2e-${sequence}`, kb_id: knowledge.id, document_id: 'doc-e2e', sequence,
     title: sequence === 1 ? '研发规范 · 验收要求' : '研发规范 · 发布流程',
     text: sequence === 1 ? editedText || '星河项目的验收口令是“持久化可信分块”。' : '发布前必须完成服务端回归并保留验收记录。',
-    page_number: sequence, status: 'pending_index', created_at: knowledge.created_at, updated_at: knowledge.updated_at,
+    page_number: sequence, status: documentStatus === 'ready' ? 'ready' : documentStatus === 'processing' ? 'indexing' : 'pending_index',
+    created_at: knowledge.created_at, updated_at: knowledge.updated_at,
   }))
+  const indexVersion = (id: string, status: string, progress: number, errorCode: string | null = null) => ({
+    id, kb_id: knowledge.id, embedding_model_id: 'embed-e2e', dimensions: 1024, chunk_size: 800, chunk_overlap: 120,
+    chunk_strategy: 'structure', status, progress, total_chunks: 2, embedded_chunks: progress === 100 ? 2 : 0,
+    input_tokens: null, usage_source: 'unavailable', duration_ms: status === 'active' ? 320 : null, error_code: errorCode,
+    created_at: knowledge.created_at, started_at: status === 'queued' ? null : knowledge.created_at,
+    completed_at: ['active', 'failed'].includes(status) ? knowledge.updated_at : null,
+    activated_at: status === 'active' ? knowledge.updated_at : null,
+  })
+  let currentVersion: ReturnType<typeof indexVersion> | null = null
+  let failedVersion: ReturnType<typeof indexVersion> | null = null
   await page.route('**/api/v1/models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(models) }))
   await page.route('**/api/v1/knowledge-bases', async (route) => {
     if (route.request().method() === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(created ? [{ ...knowledge, document_count: documentStatus === 'uploaded' ? 0 : 1, chunk_count: documentStatus === 'uploaded' ? 0 : 2 }] : []) })
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(created ? [{ ...knowledge, active_index_version_id: activeVersionId, document_count: documentStatus === 'uploaded' ? 0 : 1, chunk_count: documentStatus === 'uploaded' ? 0 : 2 }] : []) })
       return
     }
     const body = route.request().postDataJSON()
@@ -461,6 +478,11 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
   })
   await page.route('**/api/v1/knowledge-bases/kb-e2e/documents', async (route) => {
     if (route.request().method() === 'GET') {
+      if (currentVersion?.status === 'queued' && indexReads >= 1) {
+        currentVersion = indexVersion('index-e2e', 'active', 100)
+        activeVersionId = currentVersion.id
+        documentStatus = 'ready'
+      }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(uploaded ? [document()] : []) })
       return
     }
@@ -478,6 +500,33 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
   await page.route('**/api/v1/chunks/chunk-e2e-1', async (route) => {
     editedText = route.request().postDataJSON().text
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(chunks()[0]) })
+  })
+  await page.route('**/api/v1/knowledge-bases/kb-e2e/index-versions', async (route) => {
+    if (route.request().method() === 'POST') {
+      if (queueFailure) {
+        failedVersion = indexVersion('index-e2e-failed', 'failed', 0, 'INDEX_QUEUE_UNAVAILABLE')
+        await route.fulfill({
+          status: 503, contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'INDEX_QUEUE_UNAVAILABLE', message: '索引任务暂时无法提交，请稍后重试', retryable: true, details: { index_version_id: failedVersion.id } } }),
+        })
+        return
+      }
+      indexReads = 0
+      currentVersion = indexVersion('index-e2e', 'queued', 0)
+      if (!activeVersionId) documentStatus = 'processing'
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify(currentVersion) })
+      return
+    }
+    if (currentVersion?.status === 'queued') {
+      indexReads += 1
+      if (indexReads >= 2) {
+        currentVersion = indexVersion('index-e2e', 'active', 100)
+        activeVersionId = currentVersion.id
+        documentStatus = 'ready'
+      }
+    }
+    const versions = [failedVersion, currentVersion].filter(Boolean)
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(versions) })
   })
 
   await page.goto('/knowledge')
@@ -508,7 +557,23 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
   await expect(page.locator('.chunk-item').first()).toContainText('人工验收修订')
   expect(editedText).toBe('人工验收修订：服务端分块内容已更新。')
   await page.getByRole('button', { name: /文件与任务/ }).click()
-  await expect(page.locator('.task-list')).toContainText('真实向量索引任务尚未接入')
+  await expect(page.locator('.task-list')).toContainText('尚无真实索引版本')
+  await page.locator('.knowledge-content .page-heading').getByRole('button', { name: /构建索引/ }).click()
+  await expect(page.locator('.task-list')).toContainText('当前版本', { timeout: 10_000 })
+  await expect(page.locator('.task-list')).toContainText('2/2 个分块')
+  await expect(page.locator('.task-list')).toContainText('Token 用量未提供')
+  await expect(page.locator('.workspace-summary')).toContainText('1 份已索引')
+  await expect(page.locator('.table-card tbody')).toContainText('已索引')
+
+  queueFailure = true
+  await page.locator('.knowledge-content .page-heading').getByRole('button', { name: /构建索引/ }).click()
+  await expect(page.locator('.ant-message')).toContainText('索引任务暂时无法提交')
+  await expect(page.locator('.task-list')).toContainText('INDEX_QUEUE_UNAVAILABLE')
+  await expect(page.locator('.task-list')).toContainText('当前版本')
+  await expect(page.locator('.workspace-summary')).toContainText('1 份已索引')
+  const errors = browserErrors.get(page) || []
+  expect(errors.some((message) => message.includes('503 (Service Unavailable)'))).toBe(true)
+  browserErrors.set(page, errors.filter((message) => !message.includes('503 (Service Unavailable)')))
 })
 
 test('图片经真实 OCR 异步链路识别后才进入分块并保留来源', async ({ page }) => {

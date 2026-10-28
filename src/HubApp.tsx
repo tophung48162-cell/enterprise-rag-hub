@@ -9,7 +9,7 @@ import { canAccessPath, getAccessibleMenuItems, getDefaultRoute, normalizeRole, 
 import { advanceTasks, detectKind, getModelDependents, logKnowledgeIds, readWorkspace, rechunkKnowledge, retrieveChunks, shouldReadFileContent, splitContent, STORE_KEY, timestamp, uid, validateFiles } from './workspace'
 import type { BuildState, HubAssistant, HubChunk, HubDocument, HubKnowledge, HubLog, HubModel, HubProvider, HubSession, HubState } from './workspace'
 import { apiErrorMessage, hubApi, recognizeOcr } from './api'
-import type { ChunkDto, DocumentDto, ModelDto, ProviderDto } from './api'
+import type { ChunkDto, DocumentDto, IndexVersionDto, ModelDto, ProviderDto } from './api'
 
 type ContextValue = {
   state: HubState
@@ -18,6 +18,7 @@ type ContextValue = {
   knowledgeConnected: boolean
   knowledgeLoading: boolean
   remoteModels: ModelDto[]
+  remoteIndexVersions: Record<string, IndexVersionDto[]>
   refreshKnowledge: () => Promise<void>
 }
 const HubContext = createContext<ContextValue>(null!)
@@ -29,7 +30,7 @@ const roleKey = 'knowledge-hub-role-v3'
 const accessibleKbs = (state: HubState, role: Role) => state.knowledge.filter((kb) => role === 'admin' || (role === 'manager' && kb.managed) || (role === 'user' && kb.published))
 const availableModels = (state: HubState, type: HubModel['type']) => state.models.filter((m) => m.type === type && m.enabled && state.providers.some((p) => p.name === m.provider && p.configured)).map((m) => ({ value: m.name, label: `${m.name} · ${m.provider}` }))
 const remoteTime = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
-const mapRemoteDocument = (document: DocumentDto): HubDocument => ({
+const mapRemoteDocument = (document: DocumentDto, indexProgress = 0): HubDocument => ({
   id: document.id,
   kbId: document.kb_id,
   name: document.original_name,
@@ -37,7 +38,7 @@ const mapRemoteDocument = (document: DocumentDto): HubDocument => ({
   size: formatBytes(document.size_bytes),
   state: ({ ready: 'ready', processing: 'processing', failed: 'failed', uploaded: 'uploaded', pending_index: 'pending' } as Record<DocumentDto['status'], BuildState>)[document.status],
   chunks: document.chunk_count,
-  progress: document.status === 'ready' ? 100 : 0,
+  progress: document.status === 'ready' ? 100 : document.status === 'processing' ? indexProgress : 0,
   parser: 'LangChain Markdown · 服务端持久化',
   updated: remoteTime(document.updated_at),
 })
@@ -79,14 +80,20 @@ export default function HubApp() {
   const [knowledgeConnected, setKnowledgeConnected] = useState(false)
   const [knowledgeLoading, setKnowledgeLoading] = useState(true)
   const [remoteModels, setRemoteModels] = useState<ModelDto[]>([])
+  const [remoteIndexVersions, setRemoteIndexVersions] = useState<Record<string, IndexVersionDto[]>>({})
   const refreshKnowledge = async () => {
     setKnowledgeLoading(true)
     try {
       const [knowledgeItems, modelItems] = await Promise.all([hubApi.listKnowledgeBases(), hubApi.listModels()])
-      const documentGroups = await Promise.all(knowledgeItems.map((item) => hubApi.listDocuments(item.id)))
+      const [documentGroups, indexGroups] = await Promise.all([
+        Promise.all(knowledgeItems.map((item) => hubApi.listDocuments(item.id))),
+        Promise.all(knowledgeItems.map((item) => hubApi.listIndexVersions(item.id))),
+      ])
       const documentItems = documentGroups.flat()
       const chunkGroups = await Promise.all(documentItems.map((item) => hubApi.listChunks(item.id)))
+      const versionGroups = Object.fromEntries(knowledgeItems.map((item, index) => [item.id, indexGroups[index]]))
       setRemoteModels(modelItems)
+      setRemoteIndexVersions(versionGroups)
       setState((current) => ({
         ...current,
         knowledge: knowledgeItems.map((item) => ({
@@ -101,23 +108,36 @@ export default function HubApp() {
           rerank: modelItems.find((model) => model.id === item.rerank_model_id)?.remote_model_id || '',
           embeddingId: item.embedding_model_id,
           rerankId: item.rerank_model_id || undefined,
+          activeIndexVersionId: item.active_index_version_id || undefined,
           updated: remoteTime(item.updated_at),
           chunkSize: item.chunk_size,
           overlap: item.chunk_overlap,
           strategy: item.chunk_strategy,
         })),
-        documents: documentItems.map(mapRemoteDocument),
+        documents: documentItems.map((document) => {
+          const running = versionGroups[document.kb_id]?.find((version) => ['queued', 'building'].includes(version.status))
+          return mapRemoteDocument(document, running?.progress || 0)
+        }),
         chunks: chunkGroups.flat().map(mapRemoteChunk),
         tasks: [],
       }))
       setKnowledgeConnected(true)
     } catch {
       setKnowledgeConnected(false)
+      setRemoteIndexVersions({})
     } finally {
       setKnowledgeLoading(false)
     }
   }
   useEffect(() => { void refreshKnowledge() }, [])
+  useEffect(() => {
+    const running = knowledgeConnected && Object.values(remoteIndexVersions).some((versions) =>
+      versions.some((version) => ['queued', 'building'].includes(version.status)),
+    )
+    if (!running) return
+    const timer = window.setTimeout(() => { void refreshKnowledge() }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [remoteIndexVersions, knowledgeConnected])
   useEffect(() => { try { localStorage.setItem(STORE_KEY, JSON.stringify(state)) } catch { message.warning('浏览器存储不可用，本次修改将在关闭页面后丢失。') } }, [state, message])
   useEffect(() => { const timer = window.setInterval(() => setState(advanceTasks), 800); return () => window.clearInterval(timer) }, [])
   const changeRole = (value: Role) => {
@@ -128,7 +148,7 @@ export default function HubApp() {
   }
   const routeRoot = '/' + location.pathname.split('/')[1]
   const activeMenu = getAccessibleMenuItems(role).find((item) => item.path === routeRoot)
-  return <HubContext.Provider value={{ state, setState, role, knowledgeConnected, knowledgeLoading, remoteModels, refreshKnowledge }}><div className={`hub ${navOpen ? 'nav-open' : ''}`}>
+  return <HubContext.Provider value={{ state, setState, role, knowledgeConnected, knowledgeLoading, remoteModels, remoteIndexVersions, refreshKnowledge }}><div className={`hub ${navOpen ? 'nav-open' : ''}`}>
     <aside className="global-sidebar">
       <button className="brand" onClick={() => navigate('/workbench')}><span className="brand-symbol">知</span><span><b>知枢</b><small>企业知识中台</small></span></button>
       <span className="nav-section">工作空间</span>
@@ -137,7 +157,7 @@ export default function HubApp() {
     </aside>
     <div className="hub-frame">
       <header className="global-header"><div className="header-left"><Button className="mobile-nav" type="text" icon={<AppstoreOutlined />} aria-label="展开模块导航" onClick={() => setNavOpen(!navOpen)} /><Breadcrumb items={[{ title: '企业知识中台' }, { title: activeMenu?.label || '工作台' }]} /></div><Space size={16}><span className="role-note">体验视角 · 非鉴权</span><Select value={role} options={ROLE_OPTIONS} onChange={changeRole} aria-label="切换体验角色" className="role-select" prefix={<UserOutlined />} /></Space></header>
-      <div className="prototype-ribbon"><InfoCircleOutlined /><span>1.0 联调版：模型配置、图片 OCR、知识库与 Markdown 分块支持真实接口；向量索引、检索问答及其他文档解析仍为演示。</span><Tag variant="filled">V2</Tag></div>
+      <div className="prototype-ribbon"><InfoCircleOutlined /><span>1.0 联调版：模型配置、图片 OCR、Markdown 分块与版本化向量索引已接入真实接口；检索问答及其他文档解析仍未接入。</span><Tag variant="filled">V2</Tag></div>
       <main className="hub-main"><Routes>
         <Route path="/" element={<Navigate to="/workbench" replace />} />
         <Route path="/workbench" element={<Workbench />} />
@@ -215,9 +235,9 @@ function KnowledgeList() {
     finally { setCreating(false) }
   }
   return <div className="page"><Heading title="知识库" description="集中管理企业知识，完成文件接入、解析分块与索引构建。" actions={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建知识库</Button>} />
-    <Alert className="space-bottom" showIcon type={knowledgeConnected ? 'success' : knowledgeLoading ? 'info' : 'warning'} title={knowledgeConnected ? '已连接 FastAPI · 知识库、Markdown 与分块使用服务端持久化数据' : knowledgeLoading ? '正在读取知识库数据…' : '后端未连接 · 当前为本机知识库演示'} description={knowledgeConnected ? '真实分块保存后处于待索引状态；向量索引、检索和问答尚未接入。' : '连接后端并配置 Embedding 模型后，可创建真实知识库。'} />
+    <Alert className="space-bottom" showIcon type={knowledgeConnected ? 'success' : knowledgeLoading ? 'info' : 'warning'} title={knowledgeConnected ? '已连接 FastAPI · 知识库、Markdown、分块与向量索引使用服务端数据' : knowledgeLoading ? '正在读取知识库数据…' : '后端未连接 · 当前为本机知识库演示'} description={knowledgeConnected ? '分块完成后可创建真实 Embedding 索引版本；检索、问答和其他文档解析尚未接入。' : '连接后端并配置 Embedding 模型后，可创建真实知识库。'} />
     <div className="knowledge-toolbar"><Space wrap><Input prefix={<SearchOutlined />} placeholder="搜索知识库名称" value={search} onChange={(e) => setSearch(e.target.value)} allowClear /><Select aria-label="按部门筛选" value={department} onChange={setDepartment} options={[{ value: 'all', label: '全部部门' }, ...[...new Set(accessibleKbs(state, role).map((kb) => kb.department))].map((value) => ({ value, label: value }))]} /></Space><span>{role === 'manager' ? '我管理的知识库' : '全部知识库'} <b>{kbs.length}</b></span></div>
-    <div className="knowledge-grid">{kbs.map((kb) => { const docs = state.documents.filter((d) => d.kbId === kb.id); const chunks = state.chunks.filter((c) => c.kbId === kb.id); return <article key={kb.id} className="knowledge-card"><div className="knowledge-card-head"><span className={`kb-avatar color-${kb.color}`}><DatabaseOutlined /></span><Tag color={docs.some((d) => d.state === 'processing') ? 'processing' : docs.some((d) => d.state === 'ready') ? 'success' : docs.length ? 'warning' : 'default'}>{docs.some((d) => d.state === 'processing') ? '构建中' : docs.some((d) => d.state === 'ready') ? '可检索' : docs.length ? '待索引' : '待导入'}</Tag></div><h3><button onClick={() => navigate(`/knowledge/${kb.id}`)}>{kb.name}</button></h3><p>{kb.description}</p><div className="kb-labels"><Tag variant="filled">{kb.department}</Tag><span>{kb.published ? '已开放问答' : '未发布'}</span></div><div className="kb-counts"><span><FileTextOutlined /> <b>{docs.length}</b> 份文档</span><span><ScissorOutlined /> <b>{chunks.length}</b> 个分块</span></div><div className="kb-model"><NodeIndexOutlined /><span>{kb.embedding}</span><Tooltip title="知识库级索引模型"><InfoCircleOutlined /></Tooltip></div><div className="knowledge-card-footer"><span>{kb.updated}</span><Button type="link" onClick={() => navigate(`/knowledge/${kb.id}`)}>进入知识库 <ArrowRightOutlined /></Button></div></article> })}<button className="create-kb-card" onClick={openCreate}><span><PlusOutlined /></span><b>创建新的知识库</b><p>为一个业务领域建立知识空间</p></button></div>
+    <div className="knowledge-grid">{kbs.map((kb) => { const docs = state.documents.filter((d) => d.kbId === kb.id); const chunks = state.chunks.filter((c) => c.kbId === kb.id); return <article key={kb.id} className="knowledge-card"><div className="knowledge-card-head"><span className={`kb-avatar color-${kb.color}`}><DatabaseOutlined /></span><Tag color={docs.some((d) => d.state === 'processing') ? 'processing' : docs.some((d) => d.state === 'ready') ? 'success' : docs.length ? 'warning' : 'default'}>{docs.some((d) => d.state === 'processing') ? '构建中' : docs.some((d) => d.state === 'ready') ? knowledgeConnected ? '已索引' : '可检索' : docs.length ? '待索引' : '待导入'}</Tag></div><h3><button onClick={() => navigate(`/knowledge/${kb.id}`)}>{kb.name}</button></h3><p>{kb.description}</p><div className="kb-labels"><Tag variant="filled">{kb.department}</Tag><span>{kb.published ? '已开放问答' : '未发布'}</span></div><div className="kb-counts"><span><FileTextOutlined /> <b>{docs.length}</b> 份文档</span><span><ScissorOutlined /> <b>{chunks.length}</b> 个分块</span></div><div className="kb-model"><NodeIndexOutlined /><span>{kb.embedding}</span><Tooltip title="知识库级索引模型"><InfoCircleOutlined /></Tooltip></div><div className="knowledge-card-footer"><span>{kb.updated}</span><Button type="link" onClick={() => navigate(`/knowledge/${kb.id}`)}>进入知识库 <ArrowRightOutlined /></Button></div></article> })}<button className="create-kb-card" onClick={openCreate}><span><PlusOutlined /></span><b>创建新的知识库</b><p>为一个业务领域建立知识空间</p></button></div>
     {!kbs.length && search && <Empty description="没有找到匹配的知识库" />}
     <Modal title="新建知识库" open={open} onCancel={() => setOpen(false)} onOk={create} okText="创建知识库" cancelText="取消" confirmLoading={creating} destroyOnHidden>
       <Form form={form} layout="vertical">
@@ -233,33 +253,49 @@ function KnowledgeList() {
 }
 
 function KnowledgeWorkspace({ initialImport = false }: { initialImport?: boolean }) {
-  const { state, setState, role, knowledgeConnected, knowledgeLoading } = useHub(); const { id } = useParams(); const navigate = useNavigate(); const [params, setParams] = useSearchParams(); const { message } = AntApp.useApp()
+  const { state, setState, role, knowledgeConnected, knowledgeLoading, remoteIndexVersions, refreshKnowledge } = useHub(); const { id } = useParams(); const navigate = useNavigate(); const [params, setParams] = useSearchParams(); const { message } = AntApp.useApp()
   const kb = accessibleKbs(state, role).find((k) => k.id === id)
   const [importOpen, setImportOpen] = useState(initialImport); const [settingsOpen, setSettingsOpen] = useState(false)
+  const [creatingIndex, setCreatingIndex] = useState(false)
   const tab = params.get('tab') || 'files'
   if (knowledgeLoading && !kb) return <div className="loading-state"><Spin /><p>正在读取知识库…</p></div>
   if (!kb) return <Result status="403" title="知识库不存在或不在当前角色管理范围内" extra={<Button onClick={() => navigate('/knowledge')}>返回知识库</Button>} />
   const docs = state.documents.filter((d) => d.kbId === id); const chunks = state.chunks.filter((c) => c.kbId === id); const tasks = state.tasks.filter((t) => t.kbId === id)
-  const rebuilding = docs.some((d) => d.state === 'processing')
-  const rebuild = () => {
+  const rebuilding = creatingIndex || docs.some((d) => d.state === 'processing') || (remoteIndexVersions[kb.id] || []).some((version) => ['queued', 'building'].includes(version.status))
+  const rebuild = async () => {
     if (!docs.length) { message.info('请先导入文件'); return }
-    if (knowledgeConnected) { message.info('真实分块已保存；向量索引服务尚未接入，本次未创建模拟任务'); return }
+    if (rebuilding) return
+    if (knowledgeConnected) {
+      setCreatingIndex(true)
+      try {
+        const version = await hubApi.createIndexVersion(kb.id)
+        await refreshKnowledge()
+        message.success(`索引版本 ${version.id.slice(-8)} 已提交，正在调用 Embedding 服务`)
+      } catch (error) {
+        message.error(apiErrorMessage(error))
+        await refreshKnowledge().catch(() => undefined)
+      } finally { setCreatingIndex(false) }
+      return
+    }
     setState((s) => startBuild(s, kb.id, docs.map((d) => d.id))); message.success('重建任务已创建，可在文件与任务中查看进度')
   }
+  const buildButton = <Button type={tab === 'chunks' ? 'primary' : 'default'} icon={<ReloadOutlined />} loading={rebuilding} disabled={!docs.length} onClick={() => { void rebuild() }}>构建索引</Button>
   return <div className="knowledge-workspace"><aside className="knowledge-subnav"><button className="back-link" onClick={() => navigate('/knowledge')}><ArrowLeftOutlined /> 全部知识库</button><div className="subnav-identity"><span className={`kb-avatar small color-${kb.color}`}><DatabaseOutlined /></span><div><b>{kb.name}</b><small>知识库工作区</small></div></div><div className="subnav-divider" />{[{ key: 'files', icon: <FileTextOutlined />, text: '文件与任务', count: docs.length }, { key: 'chunks', icon: <ScissorOutlined />, text: '分块预览', count: chunks.length }, { key: 'search', icon: <SearchOutlined />, text: '检索测试' }].map((item) => <button key={item.key} className={`subnav-item ${tab === item.key ? 'selected' : ''}`} onClick={() => setParams({ tab: item.key })}>{item.icon}<span>{item.text}</span>{item.count !== undefined && <small>{item.count}</small>}</button>)}<div className="subnav-foot"><div><span>索引模型</span><b>{kb.embedding}</b></div><Button type="text" icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>知识库设置</Button></div></aside>
-    <section className="knowledge-content"><Heading kicker={`知识库 / ${tab === 'chunks' ? '分块预览' : tab === 'search' ? '检索测试' : '文件与任务'}`} title={tab === 'chunks' ? '分块预览与编辑' : tab === 'search' ? '检索测试' : '文件与构建任务'} description={tab === 'chunks' ? '检查文档结构、上下文边界和索引状态；人工修改后需重新生成向量。' : tab === 'search' ? '用真实问题验证召回片段，检查重排效果和原文依据。' : '接入多种格式的企业资料，查看解析、分块和索引构建进度。'} actions={tab === 'files' ? <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => setImportOpen(true)}>导入知识</Button> : tab === 'chunks' ? <Button type="primary" icon={<ReloadOutlined />} loading={rebuilding} disabled={!docs.length} onClick={rebuild}>重建索引</Button> : undefined} />
-      {tab === 'files' ? <DocumentTasks kb={kb} documents={docs} tasks={tasks} onImport={() => setImportOpen(true)} onChunks={() => setParams({ tab: 'chunks' })} /> : tab === 'chunks' ? <ChunkWorkspace kb={kb} documents={docs} onRebuild={rebuild} /> : <RetrievalTest kb={kb} />}
+    <section className="knowledge-content"><Heading kicker={`知识库 / ${tab === 'chunks' ? '分块预览' : tab === 'search' ? '检索测试' : '文件与任务'}`} title={tab === 'chunks' ? '分块预览与编辑' : tab === 'search' ? '检索测试' : '文件与构建任务'} description={tab === 'chunks' ? '检查文档结构、上下文边界和索引状态；人工修改后需重新生成向量。' : tab === 'search' ? '用真实问题验证召回片段，检查重排效果和原文依据。' : '接入多种格式的企业资料，查看解析、分块和索引构建进度。'} actions={tab === 'files' ? <Space>{buildButton}<Button type="primary" icon={<CloudUploadOutlined />} onClick={() => setImportOpen(true)}>导入知识</Button></Space> : tab === 'chunks' ? buildButton : undefined} />
+      {tab === 'files' ? <DocumentTasks kb={kb} documents={docs} tasks={tasks} onImport={() => setImportOpen(true)} onChunks={() => setParams({ tab: 'chunks' })} /> : tab === 'chunks' ? <ChunkWorkspace kb={kb} documents={docs} onRebuild={() => { void rebuild() }} /> : <RetrievalTest kb={kb} />}
     </section><ImportKnowledge kb={kb} open={importOpen} onClose={() => { setImportOpen(false); if (initialImport) navigate(`/knowledge/${kb.id}`) }} /><KnowledgeSettings kb={kb} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
   </div>
 }
 
 function DocumentTasks({ kb, documents, tasks, onImport, onChunks }: { kb: HubKnowledge; documents: HubDocument[]; tasks: HubState['tasks']; onImport: () => void; onChunks: () => void }) {
-  const { state, setState, knowledgeConnected, refreshKnowledge } = useHub()
+  const { state, setState, knowledgeConnected, remoteIndexVersions, refreshKnowledge } = useHub()
   const { message } = AntApp.useApp()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
   const [preview, setPreview] = useState<HubDocument | null>(null)
   const [deleting, setDeleting] = useState('')
+  const indexVersions = remoteIndexVersions[kb.id] || []
+  const versionLabels: Record<IndexVersionDto['status'], string> = { queued: '等待构建', building: '构建中', active: '当前版本', ready: '历史版本', failed: '构建失败' }
   const retry = (doc: HubDocument) => {
     if (knowledgeConnected) { message.info('服务端文档失败暂不支持重新解析，请删除后重新导入'); return }
     setState((s) => {
@@ -289,7 +325,7 @@ function DocumentTasks({ kb, documents, tasks, onImport, onChunks }: { kb: HubKn
   return <><div className="workspace-summary"><span><FileTextOutlined /><b>{documents.length}</b> 份文档</span><span><ScissorOutlined /><b>{state.chunks.filter((c) => c.kbId === kb.id).length}</b> 个分块</span><span><CheckCircleOutlined /><b>{documents.filter((d) => d.state === 'ready').length}</b> 份已索引</span><span className="summary-right">Embedding：{kb.embedding}</span></div>
     {pending.length > 0 && <Alert className="space-bottom" type="info" showIcon title={`正在处理 ${pending.length} 份文档`} description={<Progress percent={Math.round(pending.reduce((sum, d) => sum + d.progress, 0) / pending.length)} size="small" />} />}
     <Card className="table-card" styles={{ body: { padding: 0 } }}><div className="table-toolbar"><Input prefix={<SearchOutlined />} placeholder="搜索文件名称" value={query} onChange={(e) => setQuery(e.target.value)} allowClear /><Select value={filter} onChange={setFilter} options={[{ value: 'all', label: '全部状态' }, { value: 'ready', label: '已索引' }, { value: 'pending', label: '待索引' }, { value: 'uploaded', label: '待分块' }, { value: 'processing', label: '构建中' }, { value: 'failed', label: '处理失败' }]} /></div><Table rowKey="id" dataSource={documents.filter((d) => d.name.includes(query) && (filter === 'all' || d.state === filter))} columns={columns} pagination={false} scroll={{ x: 1020 }} locale={{ emptyText: <Empty description="还没有知识文件"><Button type="primary" onClick={onImport}>导入第一份资料</Button></Empty> }} /></Card>
-    <div className="section-title"><h3>构建任务</h3><span>文件解析 → 分块 → 向量化 → 索引</span></div><div className="task-list">{tasks.length ? [...tasks].reverse().map((task) => <div key={task.id} className="task-row"><span className="task-symbol"><NodeIndexOutlined /></span><div><b>{task.fileIds.length} 份文件的索引构建</b><small>{task.id} · {task.created}</small>{task.state === 'failed' && <span className="error-text">{task.error}</span>}</div><Progress percent={task.progress} status={task.state === 'failed' ? 'exception' : undefined} size="small" /><StateTag value={task.state} /></div>) : <div className="muted-empty">{knowledgeConnected ? '真实向量索引任务尚未接入；当前仅保存 Markdown 原件与分块。' : '暂无构建任务，导入文件后将在此处追踪进度。'}</div>}</div>
+    <div className="section-title"><h3>构建任务</h3><span>文件解析 → 分块 → 向量化 → 索引</span></div><div className="task-list">{knowledgeConnected ? indexVersions.length ? indexVersions.map((version) => <div key={version.id} className="task-row"><span className="task-symbol"><NodeIndexOutlined /></span><div><b>版本 {version.id.slice(-8)} · {version.embedded_chunks}/{version.total_chunks} 个分块</b><small>{remoteTime(version.created_at)}{version.duration_ms !== null ? ` · 耗时 ${(version.duration_ms / 1000).toFixed(2)} 秒` : ''}{version.usage_source === 'unavailable' ? ' · Token 用量未提供' : ''}</small>{version.error_code && <span className="error-text">{version.error_code}</span>}</div><Progress percent={version.progress} status={version.status === 'failed' ? 'exception' : version.status === 'active' ? 'success' : undefined} size="small" /><Tag color={version.status === 'active' ? 'success' : version.status === 'failed' ? 'error' : ['queued', 'building'].includes(version.status) ? 'processing' : 'default'}>{versionLabels[version.status]}</Tag></div>) : <div className="muted-empty">尚无真实索引版本；分块完成后点击“构建索引”调用 Embedding 服务。</div> : tasks.length ? [...tasks].reverse().map((task) => <div key={task.id} className="task-row"><span className="task-symbol"><NodeIndexOutlined /></span><div><b>{task.fileIds.length} 份文件的索引构建</b><small>{task.id} · {task.created}</small>{task.state === 'failed' && <span className="error-text">{task.error}</span>}</div><Progress percent={task.progress} status={task.state === 'failed' ? 'exception' : undefined} size="small" /><StateTag value={task.state} /></div>) : <div className="muted-empty">暂无构建任务，导入文件后将在此处追踪进度。</div>}</div>
     <Drawer title="文档内容与来源" open={Boolean(preview)} size={560} onClose={() => setPreview(null)}>{preview && <><div className="source-heading"><FileIcon kind={preview.kind} /><div><h3>{preview.name}</h3><p>{preview.parser} · {preview.size}</p></div></div><Alert type="info" showIcon title={knowledgeConnected ? '服务端持久化分块' : '原型文档预览'} description={knowledgeConnected ? '以下内容读取自 FastAPI；页码为 Markdown 分块序号，不代表原文件页码。' : '此处展示演示资料中的文本分块；正式版将展示原文件并定位页码。'} />{state.chunks.filter((c) => c.documentId === preview.id).map((c) => <article className="source-block" key={c.id}><Tag>分块序号 {c.page}</Tag><h4>{c.title}</h4><p>{c.text}</p></article>)}</>}</Drawer>
   </>
 }
@@ -308,7 +344,9 @@ function ChunkWorkspace({ kb, documents, onRebuild }: { kb: HubKnowledge; docume
   const doc = documents.find((d) => d.id === selected) || documents[0]
   const chunks = state.chunks.filter((c) => c.documentId === doc?.id)
   const pending = state.chunks.filter((c) => c.kbId === kb.id && !c.indexed).length
+  const rebuilding = documents.some((document) => document.state === 'processing')
   const saveParameters = async () => {
+    if (rebuilding) { message.info('索引正在构建，完成后才能重切分块'); return }
     if (overlap >= size) { message.error('重叠长度必须小于目标长度'); return }
     if (knowledgeConnected && strategy === 'table') { message.warning('服务端当前支持结构优先或递归字符分块'); return }
     setSavingParameters(true)
@@ -332,6 +370,7 @@ function ChunkWorkspace({ kb, documents, onRebuild }: { kb: HubKnowledge; docume
     } finally { setSavingParameters(false) }
   }
   const saveChunk = async () => {
+    if (rebuilding) { message.info('索引正在构建，完成后才能编辑分块'); return }
     if (!text.trim()) { message.warning('分块内容不能为空'); return }
     if (!editing) return
     setSavingChunk(true)
@@ -341,14 +380,14 @@ function ChunkWorkspace({ kb, documents, onRebuild }: { kb: HubKnowledge; docume
         await refreshKnowledge()
       } else setState((s) => ({ ...s, chunks: s.chunks.map((c) => c.id === editing.id ? { ...c, text, indexed: false } : c) }))
       setEditing(null)
-      message.success('内容已保存；真实向量索引尚未接入')
+      message.success(knowledgeConnected ? '内容已保存，请创建新索引版本' : '内容已保存，重建索引后生效')
     } catch (error) { message.error(apiErrorMessage(error)) }
     finally { setSavingChunk(false) }
   }
   const strategyOptions = [{ value: 'structure', label: 'LangChain 结构优先' }, { value: 'recursive', label: '递归字符分块' }, ...(!knowledgeConnected ? [{ value: 'table', label: '按表格区域分块' }] : [])]
-  return <><Alert type={pending ? 'warning' : 'info'} showIcon className="space-bottom" title={pending ? `${pending} 个分块等待重新索引` : knowledgeConnected ? '当前没有待索引分块' : '所有分块均已索引'} description={knowledgeConnected ? '分块与人工修订真实保存到服务端；向量索引尚未接入，不会自动生成模拟任务。' : '点击任意分块的编辑按钮进行人工修订，保存后需重建索引才能用于检索。'} />{!documents.length ? <Empty description="请先导入资料后查看分块" /> : <div className="chunk-workbench"><aside className="document-picker"><div className="panel-title">文档 <span>{documents.length}</span></div>{documents.map((item) => <button key={item.id} className={doc?.id === item.id ? 'selected' : ''} onClick={() => setSelected(item.id)}><FileIcon kind={item.kind} /><span><b>{item.name}</b><small>{state.chunks.filter((c) => c.documentId === item.id).length} 个分块</small></span></button>)}</aside>
-      <div className="chunk-list"><div className="panel-title"><b>{doc?.name}</b><span>{chunks.length} 个分块</span></div><div className="chunk-scroll">{chunks.length ? chunks.map((chunk, index) => <article className="chunk-item" key={chunk.id}><div className="chunk-item-top"><Space size={8}><Tag color={chunk.indexed ? 'cyan' : 'warning'}>{chunk.indexed ? <CheckCircleOutlined /> : <HistoryOutlined />} 分块 {index + 1}</Tag><code>{chunk.id.slice(-8)}</code></Space><Button type="text" size="small" icon={<EditOutlined />} onClick={() => { setEditing(chunk); setText(chunk.text) }}>编辑</Button></div><h4>{chunk.title}</h4><p>{chunk.text}</p><div className="chunk-meta">分块序号 {chunk.page} · {chunk.text.length} 字符 · {doc?.kind}<span>{chunk.indexed ? '已索引' : '待索引'}</span></div></article>) : <Empty description="文件尚未生成分块，请保存分块参数或重新导入" />}</div></div>
-      <aside className="chunk-parameters"><h3><SettingOutlined /> 分块参数</h3><label>策略<Select value={strategy} onChange={setStrategy} options={strategyOptions} /></label><label>目标长度<InputNumber value={size} onChange={(v) => setSize(v || 800)} min={100} max={4000} /><small>允许 100–4,000 字符</small></label><label>重叠长度<InputNumber value={overlap} onChange={(v) => setOverlap(v || 0)} min={0} max={Math.max(0, size - 1)} /></label><Divider /><div className="parameter-note"><ScissorOutlined /><span><b>{state.chunks.filter((c) => c.kbId === kb.id).length} 个分块</b><small>{knowledgeConnected ? '保存后由 LangChain 重切全部文档' : '修改参数后重建全部文件'}</small></span></div><Button block loading={savingParameters} onClick={() => { void saveParameters() }} disabled={!documents.length || documents.some((d) => d.state === 'processing')}>{knowledgeConnected ? '保存参数并重切分块' : '保存参数并重建'}</Button>{pending > 0 && <Button type="primary" block onClick={onRebuild}>重建待处理索引</Button>}</aside>
+  return <><Alert type={pending && !rebuilding ? 'warning' : 'info'} showIcon className="space-bottom" title={rebuilding ? '索引构建中，分块已锁定' : pending ? `${pending} 个分块等待重新索引` : knowledgeConnected ? '当前没有待索引分块' : '所有分块均已索引'} description={knowledgeConnected ? '分块与人工修订真实保存到服务端；每次构建创建独立版本，新版本全部成功后才替换活动版本。' : '点击任意分块的编辑按钮进行人工修订，保存后需重建索引才能用于检索。'} />{!documents.length ? <Empty description="请先导入资料后查看分块" /> : <div className="chunk-workbench"><aside className="document-picker"><div className="panel-title">文档 <span>{documents.length}</span></div>{documents.map((item) => <button key={item.id} className={doc?.id === item.id ? 'selected' : ''} onClick={() => setSelected(item.id)}><FileIcon kind={item.kind} /><span><b>{item.name}</b><small>{state.chunks.filter((c) => c.documentId === item.id).length} 个分块</small></span></button>)}</aside>
+      <div className="chunk-list"><div className="panel-title"><b>{doc?.name}</b><span>{chunks.length} 个分块</span></div><div className="chunk-scroll">{chunks.length ? chunks.map((chunk, index) => <article className="chunk-item" key={chunk.id}><div className="chunk-item-top"><Space size={8}><Tag color={chunk.indexed ? 'cyan' : 'warning'}>{chunk.indexed ? <CheckCircleOutlined /> : <HistoryOutlined />} 分块 {index + 1}</Tag><code>{chunk.id.slice(-8)}</code></Space><Button type="text" size="small" icon={<EditOutlined />} disabled={rebuilding} onClick={() => { setEditing(chunk); setText(chunk.text) }}>编辑</Button></div><h4>{chunk.title}</h4><p>{chunk.text}</p><div className="chunk-meta">分块序号 {chunk.page} · {chunk.text.length} 字符 · {doc?.kind}<span>{chunk.indexed ? '已索引' : '待索引'}</span></div></article>) : <Empty description="文件尚未生成分块，请保存分块参数或重新导入" />}</div></div>
+      <aside className="chunk-parameters"><h3><SettingOutlined /> 分块参数</h3><label>策略<Select value={strategy} onChange={setStrategy} options={strategyOptions} /></label><label>目标长度<InputNumber value={size} onChange={(v) => setSize(v || 800)} min={100} max={4000} /><small>允许 100–4,000 字符</small></label><label>重叠长度<InputNumber value={overlap} onChange={(v) => setOverlap(v || 0)} min={0} max={Math.max(0, size - 1)} /></label><Divider /><div className="parameter-note"><ScissorOutlined /><span><b>{state.chunks.filter((c) => c.kbId === kb.id).length} 个分块</b><small>{knowledgeConnected ? '保存后由 LangChain 重切全部文档' : '修改参数后重建全部文件'}</small></span></div><Button block loading={savingParameters} onClick={() => { void saveParameters() }} disabled={!documents.length || rebuilding}>{knowledgeConnected ? '保存参数并重切分块' : '保存参数并重建'}</Button>{pending > 0 && <Button type="primary" block disabled={rebuilding} onClick={onRebuild}>构建新索引版本</Button>}</aside>
     </div>}<Modal title="编辑分块" open={Boolean(editing)} onCancel={() => setEditing(null)} okText="保存修改" cancelText="取消" confirmLoading={savingChunk} onOk={() => { void saveChunk() }}><Alert className="space-bottom" type="warning" showIcon title="修改后，该分块会标记为待索引。" /><Input.TextArea aria-label="分块正文" rows={9} value={text} onChange={(e) => setText(e.target.value)} showCount /></Modal></>
 }
 
@@ -356,7 +395,7 @@ function RetrievalTest({ kb }: { kb: HubKnowledge }) {
   const { state, knowledgeConnected } = useHub(); const [query, setQuery] = useState(''); const [topK, setTopK] = useState(5); const [threshold, setThreshold] = useState(0.35); const [rerank, setRerank] = useState(true); const [loading, setLoading] = useState(false); const [results, setResults] = useState<ReturnType<typeof retrieveChunks> | null>(null); const [source, setSource] = useState<HubChunk | null>(null); const timer = useRef<number>(0)
   useEffect(() => () => window.clearTimeout(timer.current), [])
   const run = (value = query) => { if (!value.trim() || loading) return; setQuery(value); setLoading(true); timer.current = window.setTimeout(() => { setResults(retrieveChunks(state, [kb.id], value, topK, threshold, rerank)); setLoading(false) }, 650) }
-  if (knowledgeConnected) return <Alert type="info" showIcon title="真实向量检索尚未接入" description="当前知识库使用服务端持久化数据。为避免把本地文本匹配误当成真实召回，联机模式下暂不运行演示检索；待版本化向量索引完成后再开放。" />
+  if (knowledgeConnected) return <Alert type="info" showIcon title="真实向量检索尚未接入" description="版本化 Embedding 索引已可构建，但检索 API 尚未开放。为避免把本地文本匹配误当成真实召回，联机模式下暂不运行演示检索。" />
   return <div className="retrieval-layout"><Card title={<><SearchOutlined /> 检索参数</>}><label className="field-label">测试问题</label><Input.TextArea value={query} onChange={(e) => setQuery(e.target.value)} rows={4} placeholder="输入一个真实业务问题" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); run() } }} /><Button className="space-top" block type="primary" icon={<SearchOutlined />} loading={loading} disabled={!query.trim()} onClick={() => run()}>测试检索</Button><Divider /><label className="setting-row">召回数量 Top K<InputNumber min={1} max={20} value={topK} onChange={(v) => setTopK(v || 5)} /></label><label className="setting-row">最低相似度<InputNumber min={0} max={1} step={0.05} value={threshold} onChange={(v) => setThreshold(v || 0)} /></label><label className="setting-row">启用 Rerank<Switch checked={rerank} onChange={setRerank} /></label><div className="model-footnote"><NodeIndexOutlined /> {kb.embedding}<br /><NodeIndexOutlined /> {kb.rerank || '未设置重排模型'}</div><small className="muted">原型使用文本匹配模拟召回，评分仅供交互验收。</small></Card><div><div className="section-title no-top"><h3>检索结果</h3><span>{results ? `${results.length} 个命中 · ${rerank ? '已重排' : '未重排'} · 0.65 秒` : '等待测试'}</span></div>{loading ? <div className="loading-state"><Spin /><p>正在召回并整理相关片段…</p></div> : results === null ? <div className="retrieval-empty"><span><SearchOutlined /></span><h3>验证知识是否能被准确找到</h3><p>输入问题，检查命中文本、原文位置和检索评分。</p><Button onClick={() => run(kb.id === 'cuisine' ? '过桥米线有哪些主要食材？' : '差旅报销需要哪些材料？')}>试一试：{kb.id === 'cuisine' ? '过桥米线有哪些主要食材？' : '差旅报销需要哪些材料？'}</Button></div> : results.length ? results.map((chunk, i) => <Card className="retrieval-result" key={chunk.id}><div className="retrieval-result-top"><span className="rank">{i + 1}</span><div><b>{state.documents.find((d) => d.id === chunk.documentId)?.name}</b><small>第 {chunk.page} 页 · {chunk.id}</small></div><Tag color="blue">{chunk.score.toFixed(2)}</Tag></div><h4>{chunk.title}</h4><p>{chunk.text}</p><div className="result-footer"><Space size={6}><Tag>向量 {chunk.vectorScore.toFixed(2)}</Tag>{chunk.rerankScore !== null && <Tag color="cyan">重排 {chunk.rerankScore.toFixed(2)}</Tag>}</Space><Button type="link" icon={<FileTextOutlined />} onClick={() => setSource(chunk)}>查看来源</Button></div></Card>) : <Empty description="没有找到足够依据，请调整问题或降低相似度阈值" />}</div><CitationDrawer chunk={source} onClose={() => setSource(null)} /></div>
 }
 
@@ -388,11 +427,11 @@ function KnowledgeSettings({ kb, open, onClose }: { kb: HubKnowledge; open: bool
         })
       }
       onClose()
-      message.success(knowledgeConnected ? '知识库设置已保存到服务端；模型变更不会伪造索引任务' : '知识库设置已保存')
+      message.success(knowledgeConnected ? '知识库设置已保存；模型变更后需创建新索引版本' : '知识库设置已保存')
     } catch (error) { message.error(apiErrorMessage(error)) }
     finally { setSaving(false) }
   }
-  return <Drawer title="知识库设置" open={open} onClose={onClose} size={480} extra={<Button type="primary" loading={saving} onClick={() => { void save() }}>保存</Button>}><Form form={form} layout="vertical"><Form.Item name="name" label="知识库名称" rules={[{ required: true, whitespace: true }]}><Input /></Form.Item><Form.Item name="description" label="描述"><Input.TextArea rows={3} /></Form.Item><Form.Item name="embedding" label="Embedding 模型" rules={[{ required: true }]}><Select options={modelOptions('Embedding')} /></Form.Item><Alert className="space-bottom" type="warning" showIcon title={knowledgeConnected ? '向量模型变更已支持保存；版本化索引与自动重建将在后续接入。' : '变更向量模型将触发全部文件重建索引。'} /><Form.Item name="rerank" label="Rerank 模型"><Select allowClear options={modelOptions('Rerank')} /></Form.Item><Form.Item name="published" valuePropName="checked" label="允许问答应用使用"><Switch /></Form.Item></Form></Drawer>
+  return <Drawer title="知识库设置" open={open} onClose={onClose} size={480} extra={<Button type="primary" loading={saving} onClick={() => { void save() }}>保存</Button>}><Form form={form} layout="vertical"><Form.Item name="name" label="知识库名称" rules={[{ required: true, whitespace: true }]}><Input /></Form.Item><Form.Item name="description" label="描述"><Input.TextArea rows={3} /></Form.Item><Form.Item name="embedding" label="Embedding 模型" rules={[{ required: true }]}><Select options={modelOptions('Embedding')} /></Form.Item><Alert className="space-bottom" type="warning" showIcon title={knowledgeConnected ? '保存后需创建新索引版本；成功前仍保留旧活动版本。' : '变更向量模型将触发全部文件重建索引。'} /><Form.Item name="rerank" label="Rerank 模型"><Select allowClear options={modelOptions('Rerank')} /></Form.Item><Form.Item name="published" valuePropName="checked" label="允许问答应用使用"><Switch /></Form.Item></Form></Drawer>
 }
 
 type PendingFile = { id: string; name: string; size: number; error: string; text?: string; raw?: File; ocrReady?: boolean; remoteDocumentId?: string; remoteChunks?: HubChunk[]; remoteReady?: boolean }

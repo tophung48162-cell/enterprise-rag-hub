@@ -51,3 +51,66 @@ async def test_rate_limit_is_retryable_and_does_not_leak_key():
     assert caught.value.retryable is True
     assert "very-secret-key" not in str(caught.value)
     assert "secret must not leak" not in caught.value.message
+
+
+def install_embedding_transport(monkeypatch, handler):
+    import httpx2
+    from langchain_openai import OpenAIEmbeddings
+
+    clients = []
+
+    def factory(**kwargs):
+        client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+        clients.append(client)
+        return OpenAIEmbeddings(**kwargs, http_async_client=client)
+
+    monkeypatch.setattr("app.providers.gateway.OpenAIEmbeddings", factory)
+    return clients
+
+
+@pytest.mark.asyncio
+async def test_embedding_build_uses_langchain_openai_endpoint_and_parses_vectors(monkeypatch):
+    import httpx2
+
+    provider, model = make_provider_model("Embedding")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx2.Response(
+            200,
+            json={
+                "data": [
+                    {"index": 0, "embedding": [0.1, 0.2]},
+                    {"index": 1, "embedding": [0.3, 0.4]},
+                ]
+            },
+        )
+
+    clients = install_embedding_transport(monkeypatch, handler)
+    result = await ModelGateway().embed_documents(provider, model, "embedding-secret", ["第一段", "第二段"])
+    await clients[0].aclose()
+    assert len(requests) == 1
+    assert requests[0].url.path == "/v1/embeddings"
+    assert requests[0].headers["Authorization"] == "Bearer embedding-secret"
+    assert result.vectors == [[0.1, 0.2], [0.3, 0.4]]
+    assert result.input_tokens is None
+    assert result.usage_source == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_embedding_provider_failure_is_sanitized_and_retryable(monkeypatch):
+    import httpx2
+
+    provider, model = make_provider_model("Embedding")
+
+    def handler(request):
+        return httpx2.Response(500, json={"error": "embedding-secret"}, request=request)
+
+    clients = install_embedding_transport(monkeypatch, handler)
+    with pytest.raises(ApiError) as caught:
+        await ModelGateway().embed_documents(provider, model, "embedding-secret", ["文本"])
+    await clients[0].aclose()
+    assert caught.value.code == "EMBEDDING_PROVIDER_FAILED"
+    assert caught.value.retryable is True
+    assert "embedding-secret" not in str(caught.value)

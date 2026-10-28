@@ -1,6 +1,6 @@
 # 知枢后端
 
-FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连接测试、云端 OCR、知识库与 Markdown 持久化分块、Alembic 迁移和独立 Celery OCR Worker。
+FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连接测试、云端 OCR、知识库与 Markdown 持久化分块、版本化向量索引、Alembic 迁移和独立 Celery Worker。
 
 ## 已实现
 
@@ -13,12 +13,15 @@ FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连
 - 知识库创建、列表、设置与非空删除保护；被知识库引用的模型不能删除。
 - Markdown 文件名、空文件、50 MB、UTF‑8、二进制与重复内容校验；原件保存到 S3／MinIO，元数据保存到 PostgreSQL。
 - LangChain `MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter` 持久化分块、幂等重切、人工编辑与文档删除清理。
+- LangChain `OpenAIEmbeddings` 每批 32 个分块调用服务商，校验返回数量和维度；当前结果未暴露可靠 Token 用量时明确记录 `usage_source=unavailable`。
+- `queued / building / active / ready / failed` 索引版本、源分块 SHA‑256 校验、构建进度、耗时和脱敏错误码；全部成功后才切换活动版本，旧版本向量快照保留。
+- 生产使用 pgvector 类型，SQLite 测试使用 JSON 变体；构建期间锁定知识修改，重复 Worker 消息不重复调用已激活版本。
 - Celery 有限重试、指数退避、软／硬超时和独立 Worker 进程。
 - 存活／数据库就绪检查、请求 ID 和统一脱敏错误结构。
 
 ## 尚未实现
 
-Word／PDF／Excel 服务端解析、pgvector 版本化索引、Embedding 构建、真实检索与 Rerank、SSE 问答和查询日志仍属于后续阶段。真实 Markdown 分块保存后为 `pending_index`，不会伪装成已索引。React 已接入本 README 中的服务商／模型、图片 OCR、知识库与 Markdown 分块 API；其余页面仍使用明确标记的浏览器 Mock。当前联调测试使用 HTTP 替身，真实云服务和容器运行仍未验收。
+Word／PDF／Excel 服务端解析、HNSW 索引、真实检索与 Rerank、SSE 问答和查询日志仍属于后续阶段。版本化向量写入不等于检索已开放。React 已接入本 README 中的服务商／模型、图片 OCR、知识库、Markdown 分块与索引构建 API；其余页面仍使用明确标记的浏览器 Mock。当前联调测试使用 HTTP 替身，真实云服务、PostgreSQL／pgvector 和容器运行仍未验收。
 
 ## 本地开发
 
@@ -71,7 +74,16 @@ Compose 启动 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，
 | `GET` | `/api/v1/documents/{id}/chunks` | 查询持久化分块 |
 | `PATCH` | `/api/v1/chunks/{id}` | 编辑正文并标记 `pending_index` |
 
-上传接口当前只接受 `.md`。同名或同 SHA‑256 文件会返回冲突；重复预览在事务内替换旧分块，不产生重复序号。此阶段不启动 Embedding 或索引任务。
+上传接口当前只接受 `.md`。同名或同 SHA‑256 文件会返回冲突；重复预览在事务内替换旧分块，不产生重复序号。预览只保存分块，需另行创建索引版本才会调用 Embedding。
+
+## 版本化向量索引接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST / GET` | `/api/v1/knowledge-bases/{id}/index-versions` | 创建构建任务／查询版本列表 |
+| `GET` | `/api/v1/index-versions/{id}` | 查询构建进度、耗时、用量和失败信息 |
+
+索引构建通过 `index.build` 任务交给 Worker，LangChain 调用 OpenAI 兼容的 Embedding 接口。每次构建生成不可变向量快照；全部批次成功且维度一致后才激活新版本，失败时保留旧活动版本。当前使用 pgvector 向量字段，尚未建立 HNSW 索引，也未接入真实检索。
 
 ## OCR 接口
 
@@ -100,4 +112,4 @@ cd backend
 ../.venv/bin/pytest
 ```
 
-当前 27 项测试覆盖配置、密钥、模型网关契约、同步／异步 OCR、失败重试、队列异常、知识库与模型引用保护、Markdown 上传校验、原件持久化、结构化分块、幂等重切、分块编辑、删除清理和迁移。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**。
+当前 38 项测试覆盖配置、密钥、模型网关契约、同步／异步 OCR、失败重试、队列异常、知识库与模型引用保护、Markdown 上传校验、原件持久化、结构化分块、幂等重切、分块编辑、删除清理、版本化索引构建、维度校验、活动版本切换、源内容变化、重复消息、构建锁定和迁移。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**，也不代表 PostgreSQL／pgvector、Docker、HNSW 或检索链路已验收。

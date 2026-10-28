@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -62,10 +63,16 @@ class KnowledgeBase(Base):
     chunk_size: Mapped[int] = mapped_column(Integer, default=800, nullable=False)
     chunk_overlap: Mapped[int] = mapped_column(Integer, default=120, nullable=False)
     chunk_strategy: Mapped[str] = mapped_column(String(32), default="structure", nullable=False)
+    active_index_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("index_versions.id", ondelete="SET NULL", use_alter=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     documents: Mapped[list[Document]] = relationship(back_populates="knowledge_base", cascade="all, delete-orphan")
+    index_versions: Mapped[list[IndexVersion]] = relationship(
+        back_populates="knowledge_base", cascade="all, delete-orphan", foreign_keys="IndexVersion.kb_id"
+    )
 
 
 class Document(Base):
@@ -109,6 +116,49 @@ class Chunk(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     document: Mapped[Document] = relationship(back_populates="chunks")
+
+
+class IndexVersion(Base):
+    __tablename__ = "index_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"))
+    embedding_model_id: Mapped[str] = mapped_column(ForeignKey("model_configs.id", ondelete="RESTRICT"))
+    dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_overlap: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_strategy: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    embedded_chunks: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    usage_source: Mapped[str] = mapped_column(String(32), default="unavailable", nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="index_versions", foreign_keys=[kb_id])
+    embeddings: Mapped[list[ChunkEmbedding]] = relationship(
+        back_populates="index_version", cascade="all, delete-orphan"
+    )
+
+
+class ChunkEmbedding(Base):
+    __tablename__ = "chunk_embeddings"
+
+    chunk_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    index_version_id: Mapped[str] = mapped_column(ForeignKey("index_versions.id", ondelete="CASCADE"), primary_key=True)
+    source_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector().with_variant(JSON(), "sqlite"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    index_version: Mapped[IndexVersion] = relationship(back_populates="embeddings")
 
 
 class OcrResult(Base):

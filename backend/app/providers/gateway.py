@@ -3,7 +3,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from langchain_openai import OpenAIEmbeddings
 
+from app.config import get_settings
 from app.db_models import ModelConfig, Provider
 from app.errors import ApiError
 
@@ -13,6 +15,14 @@ class GatewayResult:
     duration_ms: int
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+
+@dataclass
+class EmbeddingResult:
+    vectors: list[list[float]]
+    duration_ms: int
+    input_tokens: int | None = None
+    usage_source: str = "unavailable"
 
 
 def _endpoint(base_url: str, path: str) -> str:
@@ -55,6 +65,33 @@ class ModelGateway:
         except (httpx.RequestError, ValueError) as exc:
             raise ApiError(504, "PROVIDER_UNAVAILABLE", "无法连接模型服务商", retryable=True) from exc
         return payload, round((time.perf_counter() - started) * 1000)
+
+    async def embed_documents(
+        self, provider: Provider, model: ModelConfig, api_key: str, texts: list[str]
+    ) -> EmbeddingResult:
+        if not texts:
+            return EmbeddingResult(vectors=[], duration_ms=0)
+        started = time.perf_counter()
+        embeddings = OpenAIEmbeddings(
+            model=model.remote_model_id,
+            api_key=api_key,
+            base_url=provider.base_url,
+            timeout=get_settings().http_timeout_seconds,
+            max_retries=0,
+            chunk_size=min(64, len(texts)),
+            check_embedding_ctx_length=False,
+        )
+        try:
+            vectors = await embeddings.aembed_documents(texts)
+        except Exception as exc:
+            raise ApiError(
+                502,
+                "EMBEDDING_PROVIDER_FAILED",
+                "Embedding 服务商调用失败，请检查模型配置后重试",
+                retryable=True,
+            ) from exc
+        duration = round((time.perf_counter() - started) * 1000)
+        return EmbeddingResult(vectors=vectors, duration_ms=duration)
 
     async def test_provider(self, provider: Provider, api_key: str) -> GatewayResult:
         _, duration = await self._request(provider, "GET", "models", api_key)

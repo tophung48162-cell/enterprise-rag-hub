@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.db_models import Chunk, Document, KnowledgeBase
 from app.errors import ApiError
 from app.services.configs import get_model
+from app.services.indexing import ensure_no_running_index
 from app.storage import ObjectStorage
 
 MARKDOWN_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
@@ -113,6 +114,7 @@ def upload_markdown(
     file_name: str,
     mime: str,
 ) -> Document:
+    ensure_no_running_index(db, knowledge_base.id)
     name = safe_markdown_name(file_name)
     decode_markdown(data)
     digest = hashlib.sha256(data).hexdigest()
@@ -156,6 +158,7 @@ def preview_markdown(
     chunk_overlap: int,
     chunk_strategy: str,
 ) -> list[Chunk]:
+    ensure_no_running_index(db, document.kb_id)
     validate_chunk_config(chunk_size, chunk_overlap)
     try:
         data = storage.get_bytes(document.object_key)
@@ -185,6 +188,7 @@ def preview_markdown(
 
 
 def delete_document(db: Session, storage: ObjectStorage, document: Document) -> None:
+    ensure_no_running_index(db, document.kb_id)
     if document.status == "processing":
         raise ApiError(409, "DOCUMENT_TASK_RUNNING", "文档正在处理，完成后才能删除")
     object_key = document.object_key

@@ -17,6 +17,7 @@ from app.schemas import (
     KnowledgeBaseOut,
     KnowledgeBasePatch,
 )
+from app.services.indexing import ensure_no_running_index
 from app.services.knowledge import (
     delete_document,
     get_chunk,
@@ -78,6 +79,7 @@ def knowledge_base_out(knowledge_base: KnowledgeBase) -> KnowledgeBaseOut:
         chunk_size=knowledge_base.chunk_size,
         chunk_overlap=knowledge_base.chunk_overlap,
         chunk_strategy=knowledge_base.chunk_strategy,
+        active_index_version_id=knowledge_base.active_index_version_id,
         document_count=len(knowledge_base.documents),
         chunk_count=sum(len(document.chunks) for document in knowledge_base.documents),
         created_at=knowledge_base.created_at,
@@ -131,10 +133,22 @@ def patch_knowledge_base(
     rerank_model_id = values.get("rerank_model_id", knowledge_base.rerank_model_id)
     if rerank_model_id:
         validate_model_capability(db, rerank_model_id, "Rerank")
+    index_config_changed = any(
+        values.get(key, getattr(knowledge_base, key)) != getattr(knowledge_base, key)
+        for key in ("embedding_model_id", "chunk_size", "chunk_overlap", "chunk_strategy")
+    )
+    if index_config_changed:
+        ensure_no_running_index(db, knowledge_base.id)
     for key, value in values.items():
         if key in {"name", "department"} and isinstance(value, str):
             value = value.strip()
         setattr(knowledge_base, key, value)
+    if index_config_changed:
+        for document in knowledge_base.documents:
+            document.status = "pending_index"
+            document.error_code = None
+            for chunk in document.chunks:
+                chunk.status = "pending_index"
     try:
         db.commit()
     except IntegrityError as exc:
@@ -146,6 +160,7 @@ def patch_knowledge_base(
 @router.delete("/knowledge-bases/{knowledge_base_id}", status_code=204)
 def remove_knowledge_base(knowledge_base_id: str, db: Session = Depends(get_db)) -> None:
     knowledge_base = get_knowledge_base(db, knowledge_base_id)
+    ensure_no_running_index(db, knowledge_base.id)
     if knowledge_base.documents:
         raise ApiError(409, "KNOWLEDGE_BASE_NOT_EMPTY", "请先删除知识库中的全部文档")
     db.delete(knowledge_base)
@@ -227,6 +242,7 @@ def list_chunks(document_id: str, db: Session = Depends(get_db)) -> list[ChunkOu
 @router.patch("/chunks/{chunk_id}", response_model=ChunkOut)
 def patch_chunk(chunk_id: str, payload: ChunkPatch, db: Session = Depends(get_db)) -> ChunkOut:
     chunk = get_chunk(db, chunk_id)
+    ensure_no_running_index(db, chunk.kb_id)
     text = payload.text.strip()
     if not text:
         raise ApiError(422, "EMPTY_CHUNK_CONTENT", "分块内容不能为空")

@@ -57,10 +57,33 @@ export interface KnowledgeBaseDto {
   chunk_size: number
   chunk_overlap: number
   chunk_strategy: 'structure' | 'recursive'
+  active_index_version_id: string | null
   document_count: number
   chunk_count: number
   created_at: string
   updated_at: string
+}
+
+export interface IndexVersionDto {
+  id: string
+  kb_id: string
+  embedding_model_id: string
+  dimensions: number
+  chunk_size: number
+  chunk_overlap: number
+  chunk_strategy: 'structure' | 'recursive'
+  status: 'queued' | 'building' | 'active' | 'ready' | 'failed'
+  progress: number
+  total_chunks: number
+  embedded_chunks: number
+  input_tokens: number | null
+  usage_source: string
+  duration_ms: number | null
+  error_code: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  activated_at: string | null
 }
 
 export interface KnowledgeBaseInput {
@@ -179,6 +202,11 @@ export const hubApi = {
   patchKnowledgeBase: (id: string, body: Partial<KnowledgeBaseInput>) =>
     request<KnowledgeBaseDto>(`/knowledge-bases/${id}`, json('PATCH', body)),
   deleteKnowledgeBase: (id: string) => request<void>(`/knowledge-bases/${id}`, { method: 'DELETE' }),
+  listIndexVersions: (knowledgeBaseId: string) =>
+    requestList<IndexVersionDto>(`/knowledge-bases/${knowledgeBaseId}/index-versions`),
+  createIndexVersion: (knowledgeBaseId: string) =>
+    request<IndexVersionDto>(`/knowledge-bases/${knowledgeBaseId}/index-versions`, { method: 'POST' }),
+  getIndexVersion: (id: string) => request<IndexVersionDto>(`/index-versions/${id}`),
   listDocuments: (knowledgeBaseId: string) => requestList<DocumentDto>(`/knowledge-bases/${knowledgeBaseId}/documents`),
   uploadDocument: (knowledgeBaseId: string, file: File) => {
     const body = new FormData()

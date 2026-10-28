@@ -3,7 +3,7 @@ export type BuildState = 'ready' | 'processing' | 'failed' | 'uploaded' | 'pendi
 export interface HubKnowledge {
   id: string; name: string; description: string; department: string; color: string;
   published: boolean; managed: boolean; embedding: string; rerank: string; updated: string;
-  chunkSize?: number; overlap?: number; strategy?: string; embeddingId?: string; rerankId?: string
+  chunkSize?: number; overlap?: number; strategy?: string; embeddingId?: string; rerankId?: string; activeIndexVersionId?: string
 }
 export interface HubDocument {
   id: string; kbId: string; name: string; kind: FileKind; size: string;

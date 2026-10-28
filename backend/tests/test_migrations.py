@@ -22,9 +22,19 @@ def test_initial_migration_upgrades_clean_database_and_matches_models(tmp_path):
     )
     engine = create_engine(env["HUB_DATABASE_URL"])
     inspector = inspect(engine)
-    assert {"providers", "model_configs", "ocr_results", "knowledge_bases", "documents", "chunks"}.issubset(
-        inspector.get_table_names()
-    )
+    assert {
+        "providers",
+        "model_configs",
+        "ocr_results",
+        "knowledge_bases",
+        "documents",
+        "chunks",
+        "index_versions",
+        "chunk_embeddings",
+    }.issubset(inspector.get_table_names())
+    assert "active_index_version_id" in {
+        column["name"] for column in inspector.get_columns("knowledge_bases")
+    }
     assert inspector.get_columns("ocr_results")[0]["name"] == "id"
     assert {column["name"] for column in inspector.get_columns("providers")} >= {
         "secret_ciphertext",

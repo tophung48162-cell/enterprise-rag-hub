@@ -119,10 +119,33 @@ class KnowledgeBaseOut(BaseModel):
     chunk_size: int
     chunk_overlap: int
     chunk_strategy: str
+    active_index_version_id: str | None
     document_count: int
     chunk_count: int
     created_at: datetime
     updated_at: datetime
+
+
+class IndexVersionOut(BaseModel):
+    id: str
+    kb_id: str
+    embedding_model_id: str
+    dimensions: int
+    chunk_size: int
+    chunk_overlap: int
+    chunk_strategy: str
+    status: str
+    progress: int
+    total_chunks: int
+    embedded_chunks: int
+    input_tokens: int | None
+    usage_source: str
+    duration_ms: int | None
+    error_code: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    activated_at: datetime | None
 
 
 class DocumentOut(BaseModel):

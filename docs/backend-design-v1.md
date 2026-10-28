@@ -6,11 +6,11 @@
 
 ## 当前实现状态（2026-10-28）
 
-已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原件存储、同步与 Celery 异步 OCR、持久化状态和失败重试。知识库、Markdown 文档和分块已进入第二阶段：支持知识库设置、Markdown 校验与上传、LangChain 结构化分块、幂等重切、人工编辑及删除清理。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
+已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原件存储、同步与 Celery 异步任务、持久化状态和失败重试。知识库支持 Markdown 校验与上传、LangChain 结构化分块、幂等重切、人工编辑及删除清理；索引链路支持 LangChain `OpenAIEmbeddings` 批量调用、版本化向量快照、源内容校验、进度与错误状态，以及全部成功后的活动版本原子切换。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
 
-后端现有 27 项自动化测试、前端 38 项单元／组件／API 契约测试和 21 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入服务商／模型配置、图片异步 OCR、知识库与 Markdown 分块，浏览器测试以内存 HTTP 替身验证请求、轮询、持久化分块和错误边界。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器启动和三家云端模型调用均未验收，不应据此判断真实 OCR 或云模型已可用。
+后端现有 38 项自动化测试、前端 39 项单元／组件／API 契约测试和 21 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入服务商／模型配置、图片异步 OCR、知识库、Markdown 分块和索引构建状态，浏览器测试以内存 HTTP 替身验证请求、轮询、版本激活和队列失败边界。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding 或云模型已可用。
 
-Word／PDF／Excel 服务端解析、版本化向量索引、Embedding 构建、真实检索、Rerank、SSE 问答和运行日志是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索。
+Word／PDF／Excel 服务端解析、HNSW 索引、真实检索、Rerank、SSE 问答和运行日志是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；版本化向量写入不代表检索 API 已实现，也尚未进行 HNSW 性能验收。
 
 ## 1. 设计目标与边界
 
@@ -144,10 +144,10 @@ LangChain 用在 `ingestion`、`indexing`、`retrieval`、`chat` 和模型适配
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `chunks` | `id`、`kb_id`、`document_id`、`parsed_document_id`、`sequence`、`text`、`content_hash`、`token_count`、`source_json`、`edited_at` | 保存来源页码、标题路径、表格位置和人工编辑记录 |
-| `index_versions` | `id`、`kb_id`、`embedding_model_id`、`dimensions`、`chunk_config`、`status`、`created_at`、`activated_at` | `building → ready → active → archived`，失败不覆盖旧版本 |
-| `chunk_embeddings` | `chunk_id`、`index_version_id`、`embedding`、`model_calls_id` | 向量与索引版本绑定；不同维度不得混入同一版本 |
+| `index_versions` | `id`、`kb_id`、`embedding_model_id`、`dimensions`、`chunk_size`、`chunk_overlap`、`chunk_strategy`、`source_hash`、`status`、`progress`、`error_code`、`created_at`、`activated_at` | 状态为 `queued / building / active / ready / failed`；保存构建参数和源分块哈希，失败不覆盖旧版本 |
+| `chunk_embeddings` | `chunk_id`、`index_version_id`、`source_text`、`content_hash`、`embedding`、`created_at` | 保存不可变文本与向量快照；`chunk_id` 不设外键，不同维度不得混入同一版本 |
 
-索引版本切换必须在数据库事务中完成：新版本全部写入并校验后，才更新知识库的 `active_index_version_id`。问答只读取当前活动版本；重建期间继续使用旧版本，旧版本延迟归档。
+索引版本切换必须在数据库事务中完成：新版本全部写入并校验后，才更新知识库的 `active_index_version_id`。问答后续只读取当前活动版本；重建期间保留旧版本。当前已实现版本化向量快照与真实 Embedding API 调用，但尚未建立 HNSW 索引或接入检索链路。
 
 ### 5.3 应用、会话与日志
 

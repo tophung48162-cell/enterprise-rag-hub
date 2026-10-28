@@ -6,6 +6,8 @@ from celery.exceptions import SoftTimeLimitExceeded
 from app.db import SessionLocal
 from app.db_models import OcrResult
 from app.errors import ApiError
+from app.providers.gateway import ModelGateway
+from app.services.indexing import mark_index_failed, process_index_version
 from app.services.ocr import process_queued_ocr
 from app.storage import S3Storage
 from workers.celery_app import celery_app
@@ -31,3 +33,24 @@ def recognize_ocr(self, result_id: str) -> dict[str, str]:
                 result.completed_at = datetime.now(UTC)
                 db.commit()
         return {"result_id": result_id, "status": "failed", "error_code": "OCR_TASK_TIMEOUT"}
+
+
+@celery_app.task(bind=True, name="index.build", max_retries=2, retry_backoff=True, retry_jitter=True)
+def build_index(self, version_id: str) -> dict[str, str]:
+    """Build one immutable index version, retrying transient provider failures."""
+    try:
+        with SessionLocal() as db:
+            version = asyncio.run(process_index_version(db, ModelGateway(), version_id))
+            return {"version_id": version.id, "status": version.status}
+    except ApiError as exc:
+        if exc.retryable:
+            raise self.retry(exc=exc) from exc
+        return {"version_id": version_id, "status": "failed", "error_code": exc.code}
+    except SoftTimeLimitExceeded:
+        with SessionLocal() as db:
+            mark_index_failed(db, version_id, "INDEX_TASK_TIMEOUT")
+        return {"version_id": version_id, "status": "failed", "error_code": "INDEX_TASK_TIMEOUT"}
+    except Exception:
+        with SessionLocal() as db:
+            mark_index_failed(db, version_id, "INDEX_TASK_FAILED")
+        return {"version_id": version_id, "status": "failed", "error_code": "INDEX_TASK_FAILED"}
