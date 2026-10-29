@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.deps import get_gateway
 from app.db import get_db
-from app.db_models import KnowledgeBase, ModelConfig, OcrResult, Provider
+from app.db_models import Assistant, KnowledgeBase, ModelConfig, OcrResult, Provider, QueryRun
 from app.errors import ApiError
 from app.providers.gateway import ModelGateway
 from app.schemas import (
@@ -148,8 +148,10 @@ def delete_model(model_id: str, db: Session = Depends(get_db)) -> None:
             or_(KnowledgeBase.embedding_model_id == model.id, KnowledgeBase.rerank_model_id == model.id)
         )
     )
-    if used or knowledge_used:
-        raise ApiError(409, "MODEL_IN_USE", "模型已有知识库配置或处理记录，不能删除")
+    assistant_used = db.scalar(select(func.count(Assistant.id)).where(Assistant.llm_model_id == model.id))
+    run_used = db.scalar(select(func.count(QueryRun.id)).where(QueryRun.llm_model_id == model.id))
+    if used or knowledge_used or assistant_used or run_used:
+        raise ApiError(409, "MODEL_IN_USE", "模型已有知识库、问答应用或处理记录，不能删除")
     db.delete(model)
     db.commit()
 

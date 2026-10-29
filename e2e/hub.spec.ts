@@ -639,3 +639,103 @@ test('图片经真实 OCR 异步链路识别后才进入分块并保留来源', 
     return state.documents.find((doc: { name: string }) => doc.name === '验收流程图.png')?.parser
   })).toBe('通义云端 OCR')
 })
+
+test('联机应用配置、SSE 问答、不可变引用与 Token 日志形成闭环', async ({ page }) => {
+  const now = '2026-10-29T00:00:00Z'
+  const knowledge = {
+    id: 'kb-chat-e2e', name: '联机问答知识库', description: 'SSE 验收', department: '企业通用', published: true, managed: true,
+    embedding_model_id: 'embed-e2e', rerank_model_id: 'rank-e2e', chunk_size: 800, chunk_overlap: 120, chunk_strategy: 'structure',
+    active_index_version_id: 'index-e2e', document_count: 1, chunk_count: 1, created_at: now, updated_at: now,
+  }
+  const models = [
+    { id: 'llm-e2e', provider_id: 'provider-e2e', remote_model_id: 'qwen-plus', capability: 'LLM', dimensions: null, enabled: true },
+    { id: 'embed-e2e', provider_id: 'provider-e2e', remote_model_id: 'text-embedding-v4', capability: 'Embedding', dimensions: 1024, enabled: true },
+    { id: 'rank-e2e', provider_id: 'provider-e2e', remote_model_id: 'qwen3-rerank', capability: 'Rerank', dimensions: null, enabled: true },
+  ]
+  const citation = {
+    id: 'citation-e2e', chunk_id: 'chunk-e2e', ordinal: 1, document_name: '报销制度.md', title: '报销材料',
+    snapshot_text: '报销必须提供合规发票与出差审批单。', page_number: 1, vector_score: 0.88, rerank_score: 0.96,
+  }
+  let assistant: Record<string, unknown> | null = null
+  let conversations: Record<string, unknown>[] = []
+  let runs: Record<string, unknown>[] = []
+  await page.route('**/api/v1/models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(models) }))
+  await page.route('**/api/v1/knowledge-bases', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([knowledge]) }))
+  await page.route('**/api/v1/knowledge-bases/kb-chat-e2e/documents', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
+  await page.route('**/api/v1/knowledge-bases/kb-chat-e2e/index-versions', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify([{
+      id: 'index-e2e', kb_id: knowledge.id, embedding_model_id: 'embed-e2e', dimensions: 1024, chunk_size: 800,
+      chunk_overlap: 120, chunk_strategy: 'structure', status: 'active', progress: 100, total_chunks: 1, embedded_chunks: 1,
+      input_tokens: 3, usage_source: 'provider', duration_ms: 20, error_code: null, created_at: now, started_at: now,
+      completed_at: now, activated_at: now,
+    }]),
+  }))
+  await page.route('**/api/v1/assistants', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(assistant ? [assistant] : []) })
+      return
+    }
+    const body = route.request().postDataJSON()
+    expect(body).toMatchObject({ name: '联机 SSE 助手', llm_model_id: 'llm-e2e', kb_ids: [knowledge.id], published: true })
+    assistant = { ...body, id: 'assistant-e2e', managed: true, created_at: now, updated_at: now }
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(assistant) })
+  })
+  await page.route('**/api/v1/assistants/assistant-e2e/conversations', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(conversations) })
+      return
+    }
+    conversations = [{ id: 'conversation-e2e', assistant_id: 'assistant-e2e', title: '新对话', created_at: now, updated_at: now }]
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(conversations[0]) })
+  })
+  await page.route('**/api/v1/conversations/conversation-e2e/messages/stream', async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ query: '报销需要哪些材料？', role_context: 'admin' })
+    conversations = [{ ...conversations[0], title: '报销需要哪些材料？', updated_at: now }]
+    runs = [{
+      id: 'run-e2e', conversation_id: 'conversation-e2e', assistant_id: 'assistant-e2e', assistant_name: '联机 SSE 助手',
+      kb_ids: [knowledge.id], query: '报销需要哪些材料？', answer: '报销需要合规发票与出差审批单。[1]', role_context: 'admin',
+      status: 'succeeded', llm_model: 'qwen-plus', input_tokens: 26, output_tokens: 12, total_tokens: 38,
+      usage_source: 'provider', first_token_ms: 45, total_ms: 120, citation_count: 1, error_code: null, created_at: now,
+    }]
+    const events = [
+      `event: meta\ndata: ${JSON.stringify({ conversation_id: 'conversation-e2e', assistant_id: 'assistant-e2e', user_message_id: 'user-e2e', answer_message_id: 'answer-e2e', run_id: 'run-e2e' })}`,
+      `event: citations\ndata: ${JSON.stringify({ items: [citation] })}`,
+      `event: token\ndata: ${JSON.stringify({ text: '报销需要合规发票' })}`,
+      `event: token\ndata: ${JSON.stringify({ text: '与出差审批单。[1]' })}`,
+      `event: done\ndata: ${JSON.stringify({ run_id: 'run-e2e', message_id: 'answer-e2e', status: 'succeeded', input_tokens: 26, output_tokens: 12, total_tokens: 38, usage_source: 'provider', first_token_ms: 45, total_ms: 120, citation_count: 1 })}`,
+    ].join('\n\n') + '\n\n'
+    await route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' }, body: events })
+  })
+  await page.route('**/api/v1/query-runs', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(runs) }))
+
+  await page.goto('/applications')
+  await expect(page.locator('.page > .ant-alert')).toContainText('应用、会话与回答均使用服务端数据')
+  await page.getByRole('button', { name: /创建问答应用/ }).click()
+  const drawer = page.locator('.ant-drawer:visible')
+  await drawer.getByPlaceholder('例如：员工服务助手').fill('联机 SSE 助手')
+  await drawer.getByRole('combobox', { name: /关联知识库/ }).click()
+  await page.locator('.ant-select-dropdown:visible .ant-select-item-option').filter({ hasText: knowledge.name }).click()
+  await drawer.getByRole('switch', { name: '发布到在线对话', exact: true }).click()
+  await drawer.getByRole('button', { name: '保存应用', exact: true }).click()
+  const card = page.locator('.assistant-card').filter({ hasText: '联机 SSE 助手' })
+  await expect(card).toContainText('已发布')
+  await card.getByRole('button', { name: /开始对话/ }).click()
+
+  await page.getByLabel('输入问题').fill('报销需要哪些材料？')
+  await page.getByRole('button', { name: /发\s*送/ }).click()
+  await expect(page.locator('.message.assistant .message-text')).toHaveText('报销需要合规发票与出差审批单。[1]')
+  await expect(page.locator('.message-usage')).toContainText('38 Tokens')
+  await expect(page.locator('.message-usage')).toContainText('服务商用量')
+  await page.locator('.citation-buttons button').click()
+  await expect(page.locator('.ant-drawer:visible')).toContainText('活动索引原文快照')
+  await expect(page.locator('.ant-drawer:visible')).toContainText('报销必须提供合规发票与出差审批单。')
+  await page.keyboard.press('Escape')
+
+  await page.goto('/logs')
+  await expect(page.locator('tbody')).toContainText('报销需要哪些材料？')
+  await expect(page.locator('tbody')).toContainText('26 / 12')
+  await page.locator('tbody').getByRole('button', { name: '查看', exact: true }).click()
+  await expect(page.locator('.ant-drawer:visible')).toContainText('38')
+  await expect(page.locator('.ant-drawer:visible')).toContainText('服务商')
+  expect(runs).toHaveLength(1)
+})

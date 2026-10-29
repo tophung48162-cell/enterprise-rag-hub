@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.db_models import Chunk, Document, KnowledgeBase
+from app.db_models import Assistant, AssistantKnowledgeBase, Chunk, Document, KnowledgeBase
 from app.errors import ApiError
 from app.schemas import (
     ChunkOut,
@@ -133,6 +133,17 @@ def patch_knowledge_base(
     rerank_model_id = values.get("rerank_model_id", knowledge_base.rerank_model_id)
     if rerank_model_id:
         validate_model_capability(db, rerank_model_id, "Rerank")
+    published_apps = list(
+        db.scalars(
+            select(Assistant)
+            .join(AssistantKnowledgeBase, AssistantKnowledgeBase.assistant_id == Assistant.id)
+            .where(AssistantKnowledgeBase.kb_id == knowledge_base.id, Assistant.published.is_(True))
+        ).all()
+    )
+    if values.get("published") is False and published_apps:
+        raise ApiError(409, "KNOWLEDGE_BASE_IN_PUBLISHED_APP", "该知识库正被已发布应用使用，请先取消发布相关应用")
+    if knowledge_base.rerank_model_id and not rerank_model_id and any(app.rerank_enabled for app in published_apps):
+        raise ApiError(409, "RERANK_MODEL_IN_PUBLISHED_APP", "已发布应用正在使用 Rerank，请先调整应用或保留重排模型")
     index_config_changed = any(
         values.get(key, getattr(knowledge_base, key)) != getattr(knowledge_base, key)
         for key in ("embedding_model_id", "chunk_size", "chunk_overlap", "chunk_strategy")
@@ -163,6 +174,11 @@ def remove_knowledge_base(knowledge_base_id: str, db: Session = Depends(get_db))
     ensure_no_running_index(db, knowledge_base.id)
     if knowledge_base.documents:
         raise ApiError(409, "KNOWLEDGE_BASE_NOT_EMPTY", "请先删除知识库中的全部文档")
+    linked = db.scalar(
+        select(AssistantKnowledgeBase.assistant_id).where(AssistantKnowledgeBase.kb_id == knowledge_base.id)
+    )
+    if linked:
+        raise ApiError(409, "KNOWLEDGE_BASE_IN_USE", "知识库已被问答应用关联，请先调整应用配置")
     db.delete(knowledge_base)
     db.commit()
 

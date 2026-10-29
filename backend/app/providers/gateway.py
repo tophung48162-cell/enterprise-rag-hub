@@ -1,10 +1,12 @@
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from math import isfinite
 from typing import Any
 
 import httpx
-from langchain_openai import OpenAIEmbeddings
+from langchain_core.messages import BaseMessage
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from app.config import get_settings
 from app.db_models import ModelConfig, Provider
@@ -30,6 +32,29 @@ class EmbeddingResult:
 class RerankResult:
     scores: list[tuple[int, float]]
     duration_ms: int
+
+
+@dataclass
+class ChatStreamChunk:
+    text: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    usage_source: str = "unavailable"
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "".join(parts)
 
 
 def _endpoint(base_url: str, path: str) -> str:
@@ -72,6 +97,44 @@ class ModelGateway:
         except (httpx.RequestError, ValueError) as exc:
             raise ApiError(504, "PROVIDER_UNAVAILABLE", "无法连接模型服务商", retryable=True) from exc
         return payload, round((time.perf_counter() - started) * 1000)
+
+    async def stream_chat(
+        self,
+        provider: Provider,
+        model: ModelConfig,
+        api_key: str,
+        messages: list[BaseMessage],
+    ) -> AsyncIterator[ChatStreamChunk]:
+        chat = ChatOpenAI(
+            model=model.remote_model_id,
+            api_key=api_key,
+            base_url=provider.base_url,
+            timeout=get_settings().http_timeout_seconds,
+            max_retries=0,
+            streaming=True,
+            stream_usage=True,
+        )
+        try:
+            async for chunk in chat.astream(messages):
+                usage = chunk.usage_metadata or {}
+                input_tokens = usage.get("input_tokens")
+                output_tokens = usage.get("output_tokens")
+                total_tokens = usage.get("total_tokens")
+                has_usage = any(value is not None for value in (input_tokens, output_tokens, total_tokens))
+                yield ChatStreamChunk(
+                    text=_content_text(chunk.content),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    usage_source="provider" if has_usage else "unavailable",
+                )
+        except Exception as exc:
+            raise ApiError(
+                502,
+                "LLM_PROVIDER_FAILED",
+                "LLM 服务商调用失败，请检查模型配置后重试",
+                retryable=True,
+            ) from exc
 
     async def embed_documents(
         self, provider: Provider, model: ModelConfig, api_key: str, texts: list[str]

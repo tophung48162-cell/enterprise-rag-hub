@@ -98,6 +98,40 @@ async def test_rate_limit_is_retryable_and_does_not_leak_key():
     assert "secret must not leak" not in caught.value.message
 
 
+@pytest.mark.asyncio
+async def test_stream_chat_uses_langchain_stream_usage_and_returns_provider_tokens(monkeypatch):
+    from langchain_core.messages import AIMessageChunk, HumanMessage
+
+    captured = {}
+
+    class FakeChat:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def astream(self, messages):
+            assert messages[0].content == "问题"
+            yield AIMessageChunk(content="第一段")
+            yield AIMessageChunk(
+                content="",
+                usage_metadata={"input_tokens": 11, "output_tokens": 5, "total_tokens": 16},
+            )
+
+    monkeypatch.setattr("app.providers.gateway.ChatOpenAI", FakeChat)
+    provider, model = make_provider_model("LLM")
+    chunks = [
+        chunk
+        async for chunk in ModelGateway().stream_chat(provider, model, "chat-secret", [HumanMessage(content="问题")])
+    ]
+    assert captured["streaming"] is True
+    assert captured["stream_usage"] is True
+    assert captured["max_retries"] == 0
+    assert chunks[0].text == "第一段"
+    assert chunks[1].input_tokens == 11
+    assert chunks[1].output_tokens == 5
+    assert chunks[1].total_tokens == 16
+    assert chunks[1].usage_source == "provider"
+
+
 def install_embedding_transport(monkeypatch, handler):
     import httpx2
     from langchain_openai import OpenAIEmbeddings

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { hubApi, HubApiError, recognizeOcr } from './api'
+import { hubApi, HubApiError, recognizeOcr, streamChat } from './api'
 import type { OcrResultDto } from './api'
 
 const fetchMock = vi.fn()
@@ -114,6 +114,42 @@ describe('FastAPI client contracts', () => {
     await expect(hubApi.retrieveKnowledge('kb-1', { query: '报销材料', top_k: 1, candidate_k: 20, similarity_threshold: 0.35, rerank: true })).resolves.toEqual(response)
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/knowledge-bases/kb-1/retrieval')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ query: '报销材料', top_k: 1, candidate_k: 20, similarity_threshold: 0.35, rerank: true })
+  })
+
+  it('parses grounded SSE events across arbitrary network chunk boundaries', async () => {
+    const payload = [
+      'event: meta\ndata: {"conversation_id":"conv-1","user_message_id":"u1","answer_message_id":"a1","run_id":"run-1"}\n\n',
+      'event: citations\ndata: {"items":[{"id":"cite-1"}]}\n\n',
+      'event: token\ndata: {"text":"需要合规"}\n\n',
+      'event: token\ndata: {"text":"发票。"}\n\n',
+      'event: done\ndata: {"run_id":"run-1","message_id":"a1","status":"succeeded","input_tokens":10,"output_tokens":4,"total_tokens":14,"usage_source":"provider","first_token_ms":30,"total_ms":80,"citation_count":1}\n\n',
+    ].join('')
+    const bytes = new TextEncoder().encode(payload)
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, 41))
+        controller.enqueue(bytes.slice(41, 113))
+        controller.enqueue(bytes.slice(113))
+        controller.close()
+      },
+    })
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }))
+    const handlers = { onMeta: vi.fn(), onCitations: vi.fn(), onToken: vi.fn(), onDone: vi.fn() }
+    await streamChat('conv-1', { query: '报销材料', role_context: 'user' }, handlers, new AbortController().signal)
+    expect(handlers.onMeta).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'run-1' }))
+    expect(handlers.onCitations).toHaveBeenCalledWith([{ id: 'cite-1' }])
+    expect(handlers.onToken.mock.calls.map(([text]) => text).join('')).toBe('需要合规发票。')
+    expect(handlers.onDone).toHaveBeenCalledWith(expect.objectContaining({ total_tokens: 14, usage_source: 'provider' }))
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ query: '报销材料', role_context: 'user' })
+  })
+
+  it('surfaces safe SSE error events without treating them as successful answers', async () => {
+    const body = 'event: error\ndata: {"code":"LLM_PROVIDER_FAILED","message":"LLM 服务商调用失败，请检查模型配置后重试","run_id":"run-1"}\n\n'
+    fetchMock.mockResolvedValueOnce(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }))
+    const handlers = { onMeta: vi.fn(), onCitations: vi.fn(), onToken: vi.fn(), onDone: vi.fn() }
+    await expect(streamChat('conv-1', { query: '问题', role_context: 'user' }, handlers, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'LLM_PROVIDER_FAILED', message: 'LLM 服务商调用失败，请检查模型配置后重试' })
+    expect(handlers.onDone).not.toHaveBeenCalled()
   })
 
   it('polls OCR from queued to ready and returns recognized text', async () => {

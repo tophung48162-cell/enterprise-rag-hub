@@ -161,6 +161,111 @@ export interface DocumentPreviewDto {
   chunks: ChunkDto[]
 }
 
+export interface AssistantDto {
+  id: string
+  name: string
+  description: string
+  llm_model_id: string
+  kb_ids: string[]
+  system_prompt: string
+  top_k: number
+  candidate_k: number
+  similarity_threshold: number
+  rerank_enabled: boolean
+  published: boolean
+  managed: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface AssistantInput {
+  name: string
+  description: string
+  llm_model_id: string
+  kb_ids: string[]
+  system_prompt: string
+  top_k: number
+  candidate_k: number
+  similarity_threshold: number
+  rerank_enabled: boolean
+  published: boolean
+}
+
+export interface ConversationDto {
+  id: string
+  assistant_id: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CitationDto {
+  id: string
+  chunk_id: string
+  ordinal: number
+  document_name: string
+  title: string
+  snapshot_text: string
+  page_number: number
+  vector_score: number
+  rerank_score: number | null
+}
+
+export interface MessageDto {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  status: 'ready' | 'running' | 'failed' | 'stopped'
+  citations: CitationDto[]
+  created_at: string
+}
+
+export interface ConversationDetailDto extends ConversationDto {
+  messages: MessageDto[]
+}
+
+export interface QueryRunDto {
+  id: string
+  conversation_id: string
+  assistant_id: string
+  assistant_name: string
+  kb_ids: string[]
+  query: string
+  answer: string
+  role_context: 'admin' | 'manager' | 'user'
+  status: 'running' | 'succeeded' | 'failed' | 'stopped'
+  llm_model: string
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  usage_source: 'provider' | 'unavailable'
+  first_token_ms: number | null
+  total_ms: number | null
+  citation_count: number
+  error_code: string | null
+  created_at: string
+}
+
+export interface ChatDoneDto {
+  run_id: string
+  message_id: string
+  status: 'succeeded'
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  usage_source: 'provider' | 'unavailable'
+  first_token_ms: number | null
+  total_ms: number
+  citation_count: number
+}
+
+export interface ChatStreamHandlers {
+  onMeta: (data: { conversation_id: string; user_message_id: string; answer_message_id: string; run_id: string }) => void
+  onCitations: (items: CitationDto[]) => void
+  onToken: (text: string) => void
+  onDone: (data: ChatDoneDto) => void
+}
+
 export class HubApiError extends Error {
   constructor(
     message: string,
@@ -249,6 +354,18 @@ export const hubApi = {
     request<DocumentPreviewDto>(`/documents/${id}/preview`, json('POST', body)),
   listChunks: (documentId: string) => requestList<ChunkDto>(`/documents/${documentId}/chunks`),
   patchChunk: (id: string, text: string) => request<ChunkDto>(`/chunks/${id}`, json('PATCH', { text })),
+  listAssistants: () => requestList<AssistantDto>('/assistants'),
+  createAssistant: (body: AssistantInput) => request<AssistantDto>('/assistants', json('POST', body)),
+  patchAssistant: (id: string, body: Partial<AssistantInput>) =>
+    request<AssistantDto>(`/assistants/${id}`, json('PATCH', body)),
+  listConversations: (assistantId: string) =>
+    requestList<ConversationDto>(`/assistants/${assistantId}/conversations`),
+  createConversation: (assistantId: string) =>
+    request<ConversationDto>(`/assistants/${assistantId}/conversations`, json('POST', {})),
+  getConversation: (id: string) => request<ConversationDetailDto>(`/conversations/${id}`),
+  deleteConversation: (id: string) => request<void>(`/conversations/${id}`, { method: 'DELETE' }),
+  listQueryRuns: (knowledgeBaseId?: string) =>
+    requestList<QueryRunDto>(`/query-runs${knowledgeBaseId ? `?kb_id=${encodeURIComponent(knowledgeBaseId)}` : ''}`),
   startOcr: (file: File, modelConfigId: string) => {
     const body = new FormData()
     body.append('model_config_id', modelConfigId)
@@ -256,6 +373,63 @@ export const hubApi = {
     return request<OcrResultDto>('/ocr/recognize/async', { method: 'POST', body })
   },
   getOcr: (id: string) => request<OcrResultDto>(`/ocr/${id}`),
+}
+
+export async function streamChat(
+  conversationId: string,
+  body: { query: string; role_context: 'admin' | 'manager' | 'user' },
+  handlers: ChatStreamHandlers,
+  signal: AbortSignal,
+): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}/conversations/${conversationId}/messages/stream`, {
+      ...json('POST', body),
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      signal,
+    })
+  } catch (error) {
+    if (signal.aborted) throw error
+    throw new HubApiError('无法连接后端，请确认 FastAPI 已启动')
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const error = payload?.error
+    throw new HubApiError(
+      error?.message || `问答请求失败（HTTP ${response.status}）`,
+      error?.code || 'CHAT_REQUEST_FAILED',
+      response.status,
+      Boolean(error?.retryable),
+    )
+  }
+  if (!response.body) throw new HubApiError('浏览器无法读取流式回答', 'SSE_STREAM_UNAVAILABLE', 500, false)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const dispatch = (block: string) => {
+    const lines = block.split('\n')
+    const event = lines.find((line) => line.startsWith('event: '))?.slice(7)
+    const raw = lines.filter((line) => line.startsWith('data: ')).map((line) => line.slice(6)).join('\n')
+    if (!event || !raw) return
+    const data = JSON.parse(raw)
+    if (event === 'meta') handlers.onMeta(data)
+    else if (event === 'citations') handlers.onCitations(data.items)
+    else if (event === 'token') handlers.onToken(data.text)
+    else if (event === 'done') handlers.onDone(data)
+    else if (event === 'error') throw new HubApiError(data.message, data.code, 502, true)
+  }
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, '\n')
+    let boundary = buffer.indexOf('\n\n')
+    while (boundary >= 0) {
+      dispatch(buffer.slice(0, boundary))
+      buffer = buffer.slice(boundary + 2)
+      boundary = buffer.indexOf('\n\n')
+    }
+    if (done) break
+  }
+  if (buffer.trim()) dispatch(buffer.trim())
 }
 
 export async function recognizeOcr(

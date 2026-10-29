@@ -1,16 +1,16 @@
 # 知枢 · 企业知识中台后端设计（1.0）
 
-- 状态：推荐技术组合已确认；后端第一阶段已实现，完整知识问答链路仍在开发
-- 日期：2026-10-28
-- 范围：企业内部通用版，不含登录、SSO、多租户、计费、Agent 和工作流编排
+- 状态：推荐技术组合已确认；通用知识问答主链路已实现，完整文档解析和可观测模块待后续推进
+- 日期：2026-10-29
+- 范围：企业内部通用版，不含登录、SSO、多租户、正式计费、Agent 和工作流编排
 
-## 当前实现状态（2026-10-28）
+## 当前实现状态（2026-10-29）
 
-已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原件存储、同步与 Celery 异步任务、持久化状态和失败重试。知识库支持 Markdown 校验与上传、LangChain 结构化分块、幂等重切、人工编辑及删除清理；索引链路支持 LangChain `OpenAIEmbeddings` 批量调用、版本化向量快照、源内容校验、进度与错误状态，以及全部成功后的活动版本原子切换。检索链路使用活动版本的 Embedding 模型生成查询向量，PostgreSQL 通过 pgvector 余弦距离召回候选快照，支持阈值、候选池、Top K 和 Rerank 独立评分。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
+已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原件存储、同步与 Celery 异步任务、持久化状态和失败重试。知识库支持 Markdown 校验与上传、LangChain 结构化分块、幂等重切、人工编辑及删除清理；索引链路支持 LangChain `OpenAIEmbeddings` 批量调用、版本化向量快照、源内容校验、进度与错误状态，以及全部成功后的活动版本原子切换。检索链路使用活动版本的 Embedding 模型生成查询向量，PostgreSQL 通过 pgvector 余弦距离召回候选快照，支持阈值、候选池、Top K 和 Rerank 独立评分。问答链路已支持应用发布约束、持久化会话、多知识库合并、多轮上下文、LangChain `ChatOpenAI` 流式生成、SSE、引用快照和 Token 日志。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
 
-后端现有 48 项自动化测试、前端 40 项单元／组件／API 契约测试和 21 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入服务商／模型配置、图片异步 OCR、知识库、Markdown 分块、索引构建和检索状态，浏览器测试以内存 HTTP 替身验证请求、轮询、版本激活、队列失败、向量／重排评分和原文快照。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding、Rerank 或云模型已可用。
+后端现有 57 项自动化测试、前端 42 项单元／组件／API 契约测试和 22 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入真实应用、会话、流式回答、引用和日志，浏览器测试以 HTTP 替身验证请求、SSE 分包、版本激活、向量／重排评分、原文快照和 Token 展示。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding、Rerank 或 LLM 已可用。
 
-Word／PDF／Excel 服务端解析、HNSW 索引、SSE 问答和运行日志是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；向量检索已实现，但尚未进行 PostgreSQL／pgvector 运行验收或 HNSW 性能验收。
+Word／PDF／Excel 服务端解析、HNSW 索引和完整可观测模块是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；向量检索与问答尚未进行 PostgreSQL／pgvector 或真实云账号验收。
 
 ## 1. 设计目标与边界
 
@@ -262,25 +262,24 @@ Provider.probe_capabilities(config)
 
 使用 LangChain 组合检索器、消息历史和 Chat Model：
 
-1. 仅携带有限的近期对话；必要时先生成独立检索问题，保留原始问题用于日志。
-2. 为系统提示词、历史、检索上下文和输出分别设置 Token 预算，超限优先减少上下文块而不是截断来源标识。
+1. 当前携带最近 12 条已完成消息；后续可增加独立检索问题，原始问题始终保留用于日志。
+2. 当前通过 Top K 和候选池限制上下文规模；模型上下文 Token 预算与动态裁剪仍需在真实模型验收时补齐。
 3. 要求模型仅依据上下文回答，资料不足时明确说明；文档内指令视为不可信数据。
-4. 上下文使用稳定引用编号，返回引用 ID、文件、页码、原文快照和分数。
+4. 上下文使用稳定引用编号，返回引用 ID、文件、分块序号、原文快照和双评分。
 5. 流式输出发送真实增量；结束后持久化完整回答、引用和用量。
-6. 无命中时直接返回“没有找到足够依据”，不调用 LLM 编造答案。
+6. 无命中时向 LLM 明确提供“未检索到达到阈值的资料”，要求回答依据不足，不生成引用快照。
 
 ### 9.3 SSE 事件
 
 ```text
-run_started       { run_id, conversation_id }
-retrieval_done    { citations, duration_ms }
-generation_delta  { delta }
-usage             { input_tokens, output_tokens, usage_source }
-done              { message_id, duration_ms }
-error             { error_code, message, retryable }
+meta         { run_id, conversation_id, user_message_id, answer_message_id }
+citations    { items: [{ ordinal, chunk_id, snapshot_text, vector_score, rerank_score, ... }] }
+token        { text }
+done         { run_id, message_id, input_tokens, output_tokens, total_tokens, usage_source, first_token_ms, total_ms }
+error        { code, message, run_id }
 ```
 
-客户端中断或调用取消接口时，服务端向上游传播取消，主记录标记 `stopped`；已经产生的用量和耗时如实保留。不能把停止请求误记为成功。
+客户端断开时，服务端向上游传播取消，主记录标记 `stopped`；已经产生的用量和耗时如实保留。不能把停止请求误记为成功。当前通过 `AbortController` 断开 HTTP 请求，未单独提供取消 API。
 
 ## 10. API 设计（`/api/v1`）
 
@@ -334,15 +333,13 @@ error             { error_code, message, retryable }
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `GET / POST` | `/assistants` | 应用列表／创建 |
-| `GET / PATCH / DELETE` | `/assistants/{id}` | 详情／编辑／删除 |
-| `POST` | `/assistants/{id}/publish` | 校验知识库开放状态、模型可用性和索引后发布 |
-| `POST` | `/assistants/{id}/unpublish` | 取消发布，不删除历史会话 |
-| `GET / POST` | `/conversations` | 历史会话／新建 |
-| `GET / DELETE` | `/conversations/{id}` | 消息详情／删除 |
-| `POST` | `/conversations/{id}/messages` | 发送问题，SSE 返回生成过程 |
-| `POST` | `/query-runs/{id}/cancel` | 停止生成 |
-| `GET` | `/logs` | 按时间、知识库、模型、状态和关键词分页 |
-| `GET` | `/logs/{id}` | 问答、全部知识来源、引用、用量和阶段详情 |
+| `PATCH` | `/assistants/{id}` | 编辑应用；通过 `published` 发布或取消发布 |
+| `GET / POST` | `/assistants/{id}/conversations` | 历史会话／新建 |
+| `GET / DELETE` | `/conversations/{id}` | 消息与引用详情／删除会话及运行记录 |
+| `POST` | `/conversations/{id}/messages/stream` | 发送问题，SSE 返回检索、生成和用量事件 |
+| `GET` | `/query-runs` | 最近 200 条记录，可选 `kb_id` 筛选 |
+
+当前未提供应用删除、独立取消接口和日志分页；停止生成通过客户端中断 SSE 请求实现。完整筛选、分页和调用级详情属于可观测模块后续范围。
 
 ## 11. 角色与无登录边界
 

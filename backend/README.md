@@ -1,6 +1,6 @@
 # 知枢后端
 
-FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连接测试、云端 OCR、知识库与 Markdown 持久化分块、版本化向量索引、向量检索与 Rerank、Alembic 迁移和独立 Celery Worker。
+FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连接测试、云端 OCR、知识库与 Markdown 持久化分块、版本化向量索引、向量检索与 Rerank、问答应用、持久化会话、SSE 检索增强问答、引用快照和 Token 日志，以及 Alembic 迁移和独立 Celery Worker。
 
 ## 已实现
 
@@ -18,12 +18,17 @@ FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连
 - 生产使用 pgvector 类型，SQLite 测试使用 JSON 变体；构建期间锁定知识修改，重复 Worker 消息不重复调用已激活版本。
 - 查询固定使用活动版本的 Embedding 模型；PostgreSQL 通过 pgvector 余弦距离召回候选，SQLite 测试使用等价余弦计算。
 - 支持相似度阈值、候选池和 Top K；Rerank 在整个候选池内排序，返回向量／重排双评分及阶段耗时，无效响应和调用失败明确报错。
+- 问答应用持久化、知识库去重、模型能力校验和发布约束；已发布应用使用的知识库不能直接关闭或删除。
+- 会话、消息、引用快照、QueryRun 和关联知识库持久化；删除会话时显式清理相关记录。
+- LangChain `ChatOpenAI` 流式问答，启用 `stream_usage`；多知识库检索合并、最近 12 条多轮历史、系统提示词和引用编号约束。
+- SSE `meta / citations / token / done / error` 事件；成功、失败和中断状态落库，公开错误不泄露 API Key 或上游堆栈。
+- Token 只记录服务商 `usage_metadata`，未提供时保持空值和 `usage_source=unavailable`，不按字符估算；同时记录首 Token 和总耗时。
 - Celery 有限重试、指数退避、软／硬超时和独立 Worker 进程。
 - 存活／数据库就绪检查、请求 ID 和统一脱敏错误结构。
 
 ## 尚未实现
 
-Word／PDF／Excel 服务端解析、HNSW 索引、SSE 问答和查询日志仍属于后续阶段。React 已接入本 README 中的服务商／模型、图片 OCR、知识库、Markdown 分块、索引构建和检索 API；其余页面仍使用明确标记的浏览器 Mock。当前联调测试使用 HTTP 替身，真实云服务、PostgreSQL／pgvector 和容器运行仍未验收。
+Word／PDF／Excel 服务端解析、HNSW 索引和完整可观测模块仍属于后续阶段。React 已接入本 README 中的真实接口，并保留明确标记的浏览器演示回退。当前联调测试使用 HTTP 替身，真实云服务、PostgreSQL／pgvector 和容器运行仍未验收。
 
 ## 本地开发
 
@@ -95,6 +100,19 @@ Compose 启动 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，
 
 请求字段为 `query`、`top_k`、`candidate_k`、`similarity_threshold`、`rerank`。响应包含活动版本 ID、候选数量、Embedding／Rerank／总耗时，以及每项的来源快照、向量分数和重排分数。通义使用 `reranks`，OpenRouter／AIHubmix 使用 `rerank`；兼容顶层和通义 `output.results` 响应结构。
 
+## 应用、会话与问答接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET / POST` | `/api/v1/assistants` | 应用列表／创建 |
+| `PATCH` | `/api/v1/assistants/{id}` | 修改检索、提示词和发布配置 |
+| `GET / POST` | `/api/v1/assistants/{id}/conversations` | 会话列表／创建 |
+| `GET / DELETE` | `/api/v1/conversations/{id}` | 消息与引用详情／删除会话 |
+| `POST` | `/api/v1/conversations/{id}/messages/stream` | SSE 检索增强流式回答 |
+| `GET` | `/api/v1/query-runs` | 最近 200 条问答日志，可选 `kb_id` 筛选 |
+
+SSE 依次发送 `meta`、`citations`、多个 `token` 和 `done`；失败发送 `error`。回答完成后保存消息、不可变引用快照和服务商 Token 用量。客户端断开时记录 `stopped`，异常记录 `failed`，不会将部分回答标记为成功。
+
 ## OCR 接口
 
 | 方法 | 路径 | 说明 |
@@ -122,4 +140,4 @@ cd backend
 ../.venv/bin/pytest
 ```
 
-当前 48 项测试覆盖配置、密钥、模型网关契约、同步／异步 OCR、失败重试、队列异常、知识库与模型引用保护、Markdown 上传校验、原件持久化、结构化分块、幂等重切、分块编辑、删除清理、版本化索引构建、维度校验、活动版本切换、源内容变化、重复消息、构建锁定、余弦召回、候选池重排、不可变快照、模型切换保护和迁移。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**，也不代表 PostgreSQL／pgvector、Docker 或 HNSW 已验收。
+当前 57 项测试覆盖配置、密钥、LangChain 模型网关、同步／异步 OCR、知识库与模型引用保护、Markdown 持久化分块、版本化索引、活动版本切换、余弦召回、候选池重排、不可变快照、应用发布约束、会话持久化、SSE 引用与增量回答、多轮上下文、Token 有／无返回、失败脱敏、日志筛选和迁移。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**，也不代表 PostgreSQL／pgvector、Docker 或 HNSW 已验收。

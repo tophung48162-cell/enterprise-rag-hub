@@ -206,6 +206,109 @@ class ChunkOut(BaseModel):
     updated_at: datetime
 
 
+class AssistantInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    llm_model_id: str
+    kb_ids: list[str] = Field(min_length=1, max_length=20)
+    system_prompt: str = Field(min_length=1, max_length=10000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    candidate_k: int = Field(default=20, ge=1, le=100)
+    similarity_threshold: float = Field(default=0.35, ge=0, le=1)
+    rerank_enabled: bool = True
+    published: bool = False
+
+
+class AssistantPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    llm_model_id: str | None = None
+    kb_ids: list[str] | None = Field(default=None, min_length=1, max_length=20)
+    system_prompt: str | None = Field(default=None, min_length=1, max_length=10000)
+    top_k: int | None = Field(default=None, ge=1, le=20)
+    candidate_k: int | None = Field(default=None, ge=1, le=100)
+    similarity_threshold: float | None = Field(default=None, ge=0, le=1)
+    rerank_enabled: bool | None = None
+    published: bool | None = None
+
+
+class AssistantOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    llm_model_id: str
+    kb_ids: list[str]
+    system_prompt: str
+    top_k: int
+    candidate_k: int
+    similarity_threshold: float
+    rerank_enabled: bool
+    published: bool
+    managed: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationOut(BaseModel):
+    id: str
+    assistant_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class CitationOut(BaseModel):
+    id: str
+    chunk_id: str
+    ordinal: int
+    document_name: str
+    title: str
+    snapshot_text: str
+    page_number: int
+    vector_score: float
+    rerank_score: float | None
+
+
+class MessageOut(BaseModel):
+    id: str
+    role: str
+    content: str
+    status: str
+    citations: list[CitationOut]
+    created_at: datetime
+
+
+class ConversationDetailOut(ConversationOut):
+    messages: list[MessageOut]
+
+
+class ChatRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    role_context: Literal["admin", "manager", "user"] = "user"
+
+
+class QueryRunOut(BaseModel):
+    id: str
+    conversation_id: str
+    assistant_id: str
+    assistant_name: str
+    kb_ids: list[str]
+    query: str
+    answer: str
+    role_context: str
+    status: str
+    llm_model: str
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    usage_source: str
+    first_token_ms: int | None
+    total_ms: int | None
+    citation_count: int
+    error_code: str | None
+    created_at: datetime
+
+
 class DocumentPreviewRequest(BaseModel):
     chunk_size: int = Field(ge=100, le=4000)
     chunk_overlap: int = Field(ge=0, le=3999)
