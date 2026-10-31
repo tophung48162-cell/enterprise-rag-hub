@@ -319,7 +319,7 @@ class ObservabilityUsageOut(BaseModel):
 class ObservabilityRunOut(BaseModel):
     id: str
     trace_id: str
-    kind: Literal["chat"] = "chat"
+    kind: Literal["chat", "build"] = "chat"
     name: str
     target: str
     secondary_target: str
@@ -335,6 +335,18 @@ class ObservabilityRunOut(BaseModel):
     error_code: str | None
     query: str
     answer: str
+
+
+class ObservabilityContextMessageOut(BaseModel):
+    role: str
+    content: str
+
+
+class ObservabilityContextSnapshotOut(BaseModel):
+    id: str
+    messages: list[ObservabilityContextMessageOut]
+    metadata: dict
+    created_at: datetime
 
 
 class ObservabilitySpanOut(BaseModel):
@@ -356,6 +368,7 @@ class ObservabilitySpanOut(BaseModel):
     attempt: int
     error_code: str | None
     metadata: dict
+    context_snapshot: ObservabilityContextSnapshotOut | None = None
 
 
 class ObservabilityRunDetailOut(BaseModel):

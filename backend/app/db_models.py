@@ -256,7 +256,8 @@ class ObservabilitySpan(Base):
     __tablename__ = "observability_spans"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    run_id: Mapped[str] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    build_id: Mapped[str | None] = mapped_column(ForeignKey("index_versions.id", ondelete="CASCADE"), index=True)
     trace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     parent_span_id: Mapped[str | None] = mapped_column(String(36), index=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -279,7 +280,8 @@ class ModelCall(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     span_id: Mapped[str] = mapped_column(ForeignKey("observability_spans.id", ondelete="CASCADE"), unique=True)
-    run_id: Mapped[str] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    build_id: Mapped[str | None] = mapped_column(ForeignKey("index_versions.id", ondelete="CASCADE"), index=True)
     provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id", ondelete="RESTRICT"))
     model_config_id: Mapped[str] = mapped_column(ForeignKey("model_configs.id", ondelete="RESTRICT"))
     capability: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -300,7 +302,8 @@ class ErrorEvent(Base):
     __tablename__ = "error_events"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    run_id: Mapped[str] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    build_id: Mapped[str | None] = mapped_column(ForeignKey("index_versions.id", ondelete="CASCADE"), index=True)
     span_id: Mapped[str | None] = mapped_column(ForeignKey("observability_spans.id", ondelete="CASCADE"))
     category: Mapped[str] = mapped_column(String(32), nullable=False)
     severity: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -308,6 +311,17 @@ class ErrorEvent(Base):
     safe_message: Mapped[str] = mapped_column(Text, nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
     retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ContextSnapshot(Base):
+    __tablename__ = "context_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    run_id: Mapped[str] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    span_id: Mapped[str] = mapped_column(ForeignKey("observability_spans.id", ondelete="CASCADE"), unique=True)
+    messages_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 

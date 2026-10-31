@@ -1,11 +1,14 @@
-from datetime import UTC, datetime, time, timedelta
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db_models import (
     Assistant,
+    ContextSnapshot,
     ErrorEvent,
+    IndexVersion,
     KnowledgeBase,
     ModelCall,
     ModelConfig,
@@ -16,6 +19,8 @@ from app.db_models import (
 )
 from app.errors import ApiError
 from app.schemas import (
+    ObservabilityContextMessageOut,
+    ObservabilityContextSnapshotOut,
     ObservabilityErrorOut,
     ObservabilityRunDetailOut,
     ObservabilityRunOut,
@@ -40,10 +45,14 @@ def _usage(
     )
 
 
-def _root_span(db: Session, run_id: str) -> ObservabilitySpan | None:
+def _scope(model: type[ObservabilitySpan] | type[ModelCall], entity_id: str):
+    return or_(model.run_id == entity_id, model.build_id == entity_id)
+
+
+def _root_span(db: Session, entity_id: str) -> ObservabilitySpan | None:
     return db.scalar(
         select(ObservabilitySpan)
-        .where(ObservabilitySpan.run_id == run_id, ObservabilitySpan.parent_span_id.is_(None))
+        .where(_scope(ObservabilitySpan, entity_id), ObservabilitySpan.parent_span_id.is_(None))
         .order_by(ObservabilitySpan.sequence)
         .limit(1)
     )
@@ -65,6 +74,7 @@ def run_out(db: Session, run: QueryRun) -> ObservabilityRunOut:
     return ObservabilityRunOut(
         id=run.id,
         trace_id=root.trace_id if root else run.id,
+        kind="chat",
         name=run.query[:80],
         target=assistant.name if assistant else "已删除的问答应用",
         secondary_target=" · ".join(knowledge_names) or "未关联知识库",
@@ -81,6 +91,43 @@ def run_out(db: Session, run: QueryRun) -> ObservabilityRunOut:
     )
 
 
+def build_run_out(db: Session, version: IndexVersion) -> ObservabilityRunOut:
+    knowledge_base = db.get(KnowledgeBase, version.kb_id)
+    model = db.get(ModelConfig, version.embedding_model_id)
+    provider = db.get(Provider, model.provider_id) if model else None
+    root = _root_span(db, version.id)
+    status = {
+        "queued": "queued",
+        "building": "running",
+        "active": "succeeded",
+        "ready": "succeeded",
+        "failed": "failed",
+    }.get(version.status, "failed")
+    knowledge_name = knowledge_base.name if knowledge_base else "已删除的知识库"
+    return ObservabilityRunOut(
+        id=version.id,
+        trace_id=root.trace_id if root else version.id,
+        kind="build",
+        name=f"索引构建 · {knowledge_name}",
+        target=knowledge_name,
+        secondary_target=f"{version.id} · {version.embedded_chunks}／{version.total_chunks} 个分块",
+        status=status,
+        started_at=version.started_at or version.created_at,
+        duration_ms=(
+            version.duration_ms
+            if version.duration_ms is not None
+            else (root.duration_ms or 0 if root else 0)
+        ),
+        progress=version.progress,
+        provider=provider.name if provider else "未知服务商",
+        model=model.remote_model_id if model else "未知模型",
+        usage=_usage(version.input_tokens, None, version.input_tokens, version.usage_source),
+        error_code=version.error_code,
+        query="",
+        answer="",
+    )
+
+
 def span_out(db: Session, span: ObservabilitySpan, call: ModelCall | None = None) -> ObservabilitySpanOut:
     if call is None:
         call = db.scalar(select(ModelCall).where(ModelCall.span_id == span.id))
@@ -93,9 +140,12 @@ def span_out(db: Session, span: ObservabilitySpan, call: ModelCall | None = None
             metadata["first_token_ms"] = call.first_token_ms
         if call.provider_request_id:
             metadata["provider_request_id"] = call.provider_request_id
+    snapshot = db.scalar(select(ContextSnapshot).where(ContextSnapshot.span_id == span.id))
+    entity_id = span.run_id or span.build_id
+    assert entity_id is not None
     return ObservabilitySpanOut(
         id=span.id,
-        run_id=span.run_id,
+        run_id=entity_id,
         parent_id=span.parent_span_id,
         kind=span.kind,
         name=span.name,
@@ -113,6 +163,16 @@ def span_out(db: Session, span: ObservabilitySpan, call: ModelCall | None = None
         attempt=call.attempt if call else 1,
         error_code=span.error_code,
         metadata=metadata,
+        context_snapshot=(
+            ObservabilityContextSnapshotOut(
+                id=snapshot.id,
+                messages=[ObservabilityContextMessageOut(**message) for message in snapshot.messages_json],
+                metadata=snapshot.metadata_json,
+                created_at=snapshot.created_at,
+            )
+            if snapshot
+            else None
+        ),
     )
 
 
@@ -125,53 +185,79 @@ def list_runs(
     search: str | None = None,
     limit: int = 100,
 ) -> list[ObservabilityRunOut]:
-    if kind == "build":
-        return []
-    statement = (
-        select(QueryRun)
-        .join(Assistant, Assistant.id == QueryRun.assistant_id)
-        .join(ModelConfig, ModelConfig.id == QueryRun.llm_model_id)
-        .join(Provider, Provider.id == ModelConfig.provider_id)
-    )
-    if status and status != "all":
-        statement = statement.where(QueryRun.status == status)
-    if provider and provider != "all":
-        statement = statement.where(or_(Provider.name == provider, Provider.kind == provider))
-    if search and search.strip():
-        keyword = f"%{search.strip()}%"
-        knowledge_run = (
-            select(RunKnowledgeBase.run_id)
-            .join(KnowledgeBase, KnowledgeBase.id == RunKnowledgeBase.kb_id)
-            .where(KnowledgeBase.name.like(keyword))
+    output: list[ObservabilityRunOut] = []
+    keyword = f"%{search.strip()}%" if search and search.strip() else None
+    if kind != "build":
+        statement = (
+            select(QueryRun)
+            .join(Assistant, Assistant.id == QueryRun.assistant_id)
+            .join(ModelConfig, ModelConfig.id == QueryRun.llm_model_id)
+            .join(Provider, Provider.id == ModelConfig.provider_id)
         )
-        statement = statement.where(
-            or_(
-                QueryRun.id.like(keyword),
-                QueryRun.query.like(keyword),
-                QueryRun.answer.like(keyword),
-                Assistant.name.like(keyword),
-                QueryRun.id.in_(knowledge_run),
+        if status and status != "all":
+            statement = statement.where(QueryRun.status == status)
+        if provider and provider != "all":
+            statement = statement.where(or_(Provider.name == provider, Provider.kind == provider))
+        if keyword:
+            knowledge_run = (
+                select(RunKnowledgeBase.run_id)
+                .join(KnowledgeBase, KnowledgeBase.id == RunKnowledgeBase.kb_id)
+                .where(KnowledgeBase.name.like(keyword))
             )
+            statement = statement.where(
+                or_(
+                    QueryRun.id.like(keyword),
+                    QueryRun.query.like(keyword),
+                    QueryRun.answer.like(keyword),
+                    Assistant.name.like(keyword),
+                    QueryRun.id.in_(knowledge_run),
+                )
+            )
+        rows = list(db.scalars(statement.order_by(QueryRun.created_at.desc()).limit(limit)))
+        output.extend(run_out(db, run) for run in rows)
+    if kind != "chat":
+        statement = (
+            select(IndexVersion)
+            .join(KnowledgeBase, KnowledgeBase.id == IndexVersion.kb_id)
+            .join(ModelConfig, ModelConfig.id == IndexVersion.embedding_model_id)
+            .join(Provider, Provider.id == ModelConfig.provider_id)
         )
-    rows = list(db.scalars(statement.order_by(QueryRun.created_at.desc()).limit(limit)))
-    return [run_out(db, run) for run in rows]
+        status_mapping = {
+            "queued": ["queued"],
+            "running": ["building"],
+            "succeeded": ["active", "ready"],
+            "failed": ["failed"],
+            "stopped": [],
+            "timed_out": [],
+        }
+        if status and status != "all":
+            mapped = status_mapping.get(status, [status])
+            statement = statement.where(IndexVersion.status.in_(mapped)) if mapped else statement.where(False)
+        if provider and provider != "all":
+            statement = statement.where(or_(Provider.name == provider, Provider.kind == provider))
+        if keyword:
+            statement = statement.where(or_(IndexVersion.id.like(keyword), KnowledgeBase.name.like(keyword)))
+        rows = list(db.scalars(statement.order_by(IndexVersion.created_at.desc()).limit(limit)))
+        output.extend(build_run_out(db, version) for version in rows)
+    return sorted(output, key=lambda run: run.started_at, reverse=True)[:limit]
 
 
 def get_run_detail(db: Session, run_id: str) -> ObservabilityRunDetailOut:
-    run = db.get(QueryRun, run_id)
-    if not run:
+    chat_run = db.get(QueryRun, run_id)
+    build_run = db.get(IndexVersion, run_id) if not chat_run else None
+    if not chat_run and not build_run:
         raise ApiError(404, "OBSERVABILITY_RUN_NOT_FOUND", "运行记录不存在")
     spans = list(
         db.scalars(
-            select(ObservabilitySpan).where(ObservabilitySpan.run_id == run_id).order_by(ObservabilitySpan.sequence)
+            select(ObservabilitySpan).where(_scope(ObservabilitySpan, run_id)).order_by(ObservabilitySpan.sequence)
         )
     )
     calls = {
         call.span_id: call
-        for call in db.scalars(select(ModelCall).where(ModelCall.run_id == run_id))
+        for call in db.scalars(select(ModelCall).where(_scope(ModelCall, run_id)))
     }
     return ObservabilityRunDetailOut(
-        run=run_out(db, run),
+        run=run_out(db, chat_run) if chat_run else build_run_out(db, build_run),
         spans=[span_out(db, span, calls.get(span.id)) for span in spans],
     )
 
@@ -181,7 +267,7 @@ def list_errors(db: Session, *, limit: int = 200) -> list[ObservabilityErrorOut]
     return [
         ObservabilityErrorOut(
             id=event.id,
-            run_id=event.run_id,
+            run_id=event.run_id or event.build_id,
             span_id=event.span_id,
             category=event.category,
             severity=event.severity,
@@ -198,24 +284,19 @@ def list_errors(db: Session, *, limit: int = 200) -> list[ObservabilityErrorOut]
 
 
 def get_summary(db: Session) -> ObservabilitySummaryOut:
-    runs = list(db.scalars(select(QueryRun).order_by(QueryRun.created_at.desc())))
+    runs = [run_out(db, run) for run in db.scalars(select(QueryRun))]
+    runs.extend(build_run_out(db, version) for version in db.scalars(select(IndexVersion)))
+    runs.sort(key=lambda run: run.started_at, reverse=True)
     finished = [run for run in runs if run.status not in {"queued", "running"}]
     succeeded = sum(run.status == "succeeded" for run in finished)
-    status_counts = {
-        status: count
-        for status, count in db.execute(select(QueryRun.status, func.count(QueryRun.id)).group_by(QueryRun.status))
-    }
+    status_counts = dict(Counter(run.status for run in runs))
 
     today = datetime.now(UTC).date()
     first_day = today - timedelta(days=6)
-    recent = list(
-        db.scalars(
-            select(QueryRun).where(QueryRun.created_at >= datetime.combine(first_day, time.min, tzinfo=UTC))
-        )
-    )
-    by_day: dict[str, list[QueryRun]] = {}
+    recent = [run for run in runs if run.started_at.date() >= first_day]
+    by_day: dict[str, list[ObservabilityRunOut]] = {}
     for run in recent:
-        by_day.setdefault(run.created_at.date().isoformat(), []).append(run)
+        by_day.setdefault(run.started_at.date().isoformat(), []).append(run)
     trend = []
     for offset in range(7):
         day = first_day + timedelta(days=offset)
@@ -225,7 +306,7 @@ def get_summary(db: Session) -> ObservabilitySummaryOut:
                 day=day.strftime("%m/%d"),
                 runs=len(day_runs),
                 failed=sum(run.status == "failed" for run in day_runs),
-                tokens=sum(run.total_tokens or 0 for run in day_runs),
+                tokens=sum(run.usage.total or 0 for run in day_runs),
             )
         )
 
@@ -241,8 +322,8 @@ def get_summary(db: Session) -> ObservabilitySummaryOut:
     return ObservabilitySummaryOut(
         run_count=len(runs),
         success_rate=round(succeeded / len(finished) * 100, 1) if finished else 0,
-        total_tokens=sum(run.total_tokens or 0 for run in runs),
-        unknown_usage_count=sum(run.usage_source != "provider" for run in runs),
+        total_tokens=sum(run.usage.total or 0 for run in runs),
+        unknown_usage_count=sum(run.usage.source != "provider" for run in runs),
         status_counts=status_counts,
         trend=trend,
         slow_spans=[span_out(db, span) for span in slow_rows],

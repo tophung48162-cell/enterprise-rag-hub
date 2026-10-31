@@ -152,9 +152,15 @@ describe('FastAPI client contracts', () => {
     expect(handlers.onDone).not.toHaveBeenCalled()
   })
 
-  it('uses observability filters and preserves real trace and unknown-usage contracts', async () => {
+  it('uses observability filters and preserves real trace, context snapshot and unknown-usage contracts', async () => {
     const run = { id: 'run-obs', trace_id: 'trace-obs', kind: 'chat', usage: { input: null, output: null, total: null, source: 'unavailable' } }
-    const detail = { run, spans: [{ id: 'span-obs', run_id: 'run-obs', parent_id: null, usage: null, metadata: { full_snapshot_captured: false } }] }
+    const contextSnapshot = {
+      id: 'snapshot-obs',
+      messages: [{ role: 'system', content: '真实系统提示词' }, { role: 'user', content: '真实当前问题' }],
+      metadata: { context_hash: 'sha256:observed', message_count: 2, history_limit: 12 },
+      created_at: '2026-10-31T12:00:00Z',
+    }
+    const detail = { run, spans: [{ id: 'span-obs', run_id: 'run-obs', parent_id: null, usage: null, metadata: { full_snapshot_captured: true }, context_snapshot: contextSnapshot }] }
     const summary = { run_count: 1, success_rate: 100, total_tokens: 0, unknown_usage_count: 1, status_counts: { succeeded: 1 }, trend: [], slow_spans: [] }
     const errors = [{ id: 'error-obs', run_id: 'run-obs', span_id: 'span-obs', code: 'USAGE_UNAVAILABLE', count: 1 }]
     fetchMock

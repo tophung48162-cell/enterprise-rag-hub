@@ -41,7 +41,12 @@ def test_initial_migration_upgrades_clean_database_and_matches_models(tmp_path):
         "observability_spans",
         "model_calls",
         "error_events",
+        "context_snapshots",
     }.issubset(inspector.get_table_names())
+    for table in ("observability_spans", "model_calls", "error_events"):
+        columns = {column["name"]: column for column in inspector.get_columns(table)}
+        assert "build_id" in columns
+        assert columns["run_id"]["nullable"] is True
     assert "active_index_version_id" in {
         column["name"] for column in inspector.get_columns("knowledge_bases")
     }

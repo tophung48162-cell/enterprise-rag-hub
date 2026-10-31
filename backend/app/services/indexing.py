@@ -2,14 +2,15 @@ import hashlib
 import time
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.db_models import Chunk, ChunkEmbedding, IndexVersion, KnowledgeBase
+from app.db_models import Chunk, ChunkEmbedding, IndexVersion, KnowledgeBase, ObservabilitySpan
 from app.errors import ApiError
 from app.providers.gateway import ModelGateway
 from app.security import decrypt_secret
 from app.services.configs import get_model, get_provider
+from app.services.observability import TraceRecorder, create_build_trace_root
 
 EMBEDDING_BATCH_SIZE = 32
 RUNNING_INDEX_STATUSES = ("queued", "building")
@@ -71,6 +72,7 @@ def prepare_index_version(db: Session, knowledge_base: KnowledgeBase) -> IndexVe
     )
     db.add(version)
     db.flush()
+    create_build_trace_root(db, version, knowledge_name=knowledge_base.name)
     if not knowledge_base.active_index_version_id:
         for document in knowledge_base.documents:
             document.status = "processing"
@@ -81,7 +83,14 @@ def prepare_index_version(db: Session, knowledge_base: KnowledgeBase) -> IndexVe
     return version
 
 
-def mark_index_failed(db: Session, version_id: str, error_code: str) -> IndexVersion | None:
+def mark_index_failed(
+    db: Session,
+    version_id: str,
+    error_code: str,
+    *,
+    safe_message: str = "索引构建失败，请查看错误码与调用节点",
+    retryable: bool = False,
+) -> IndexVersion | None:
     version = db.get(IndexVersion, version_id)
     if not version:
         return None
@@ -101,6 +110,22 @@ def mark_index_failed(db: Session, version_id: str, error_code: str) -> IndexVer
             for chunk in document.chunks:
                 chunk.status = "ready" if has_previous_active else "failed"
     db.commit()
+    has_trace = db.scalar(
+        select(ObservabilitySpan.id).where(
+            ObservabilitySpan.build_id == version_id,
+            ObservabilitySpan.parent_span_id.is_(None),
+        )
+    )
+    if has_trace:
+        recorder = TraceRecorder(db, build_id=version_id)
+        recorder.close_open(
+            "failed",
+            code=error_code,
+            message=safe_message,
+            category="模型调用" if "EMBEDDING" in error_code else "Harness",
+            severity="error",
+            retryable=retryable,
+        )
     return version
 
 
@@ -125,14 +150,29 @@ async def process_index_version(db: Session, gateway: ModelGateway, version_id: 
     version.status = "building"
     version.progress = 0
     version.embedded_chunks = 0
+    version.input_tokens = None
+    version.usage_source = "unavailable"
     version.error_code = None
     version.started_at = datetime.now(UTC)
     version.completed_at = None
     version.activated_at = None
     db.execute(delete(ChunkEmbedding).where(ChunkEmbedding.index_version_id == version.id))
     db.commit()
+    recorder = TraceRecorder(db, build_id=version_id)
+    recorder.root.status = "running"
+    recorder.root.started_at = version.started_at
+    recorder.root.ended_at = None
+    recorder.root.duration_ms = None
+    recorder.root.error_code = None
+    recorder.root.output_text = ""
+    db.commit()
     started = time.perf_counter()
     try:
+        validate_span = recorder.start(
+            "ValidateSource",
+            summary="校验知识分块、源哈希和 Embedding 配置",
+            input_text=f"source_hash={version.source_hash}",
+        )
         knowledge_base = db.get(KnowledgeBase, version.kb_id)
         if not knowledge_base:
             raise ApiError(404, "KNOWLEDGE_BASE_NOT_FOUND", "知识库不存在")
@@ -143,8 +183,55 @@ async def process_index_version(db: Session, gateway: ModelGateway, version_id: 
         chunks = knowledge_chunks(db, knowledge_base.id)
         if not chunks or chunks_source_hash(chunks) != version.source_hash:
             raise ApiError(409, "INDEX_CONTENT_CHANGED", "构建期间知识分块已变化，请创建新版本")
+        recorder.finish(
+            validate_span,
+            "succeeded",
+            output=f"{len(chunks)} 个分块 · {version.dimensions} 维 · 源哈希一致",
+            attributes={
+                "total_chunks": len(chunks),
+                "dimensions": version.dimensions,
+                "batch_size": EMBEDDING_BATCH_SIZE,
+            },
+        )
+
+        total_batches = (len(chunks) + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
+        embedding_stage = recorder.start(
+            "Embedding Stage",
+            summary="分批调用 Embedding 并写入不可变向量快照",
+            input_text=f"{total_batches} 个批次 · 每批最多 {EMBEDDING_BATCH_SIZE} 个分块",
+            attributes={"total_batches": total_batches, "completed_batches": 0},
+        )
         for offset in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
             batch = chunks[offset : offset + EMBEDDING_BATCH_SIZE]
+            batch_number = offset // EMBEDDING_BATCH_SIZE + 1
+            batch_name = f"Embedding · batch {batch_number}"
+            attempt = 1 + (
+                db.scalar(
+                    select(func.count(ObservabilitySpan.id)).where(
+                        ObservabilitySpan.build_id == version.id,
+                        ObservabilitySpan.name == batch_name,
+                    )
+                )
+                or 0
+            )
+            batch_span = recorder.start(
+                batch_name,
+                kind="model",
+                parent_id=embedding_stage.span.id,
+                summary=f"Embedding 批次 {batch_number}／{total_batches}",
+                input_text=(
+                    f"{len(batch)} 个分块 · {sum(len(chunk.text) for chunk in batch)} 字符 · 不保存批次全文"
+                ),
+                attributes={
+                    "batch_number": batch_number,
+                    "chunk_start": offset + 1,
+                    "chunk_end": offset + len(batch),
+                    "chunk_count": len(batch),
+                },
+                provider=provider,
+                model=model,
+                attempt=attempt,
+            )
             result = await gateway.embed_documents(
                 provider,
                 model,
@@ -152,6 +239,20 @@ async def process_index_version(db: Session, gateway: ModelGateway, version_id: 
                 [chunk.text for chunk in batch],
             )
             _validate_vectors(result.vectors, len(batch), version.dimensions)
+            recorder.finish(
+                batch_span,
+                "succeeded",
+                output=f"返回 {len(result.vectors)} 个 {version.dimensions} 维向量",
+                embedding=result,
+                attributes={"dimensions": version.dimensions},
+            )
+
+            write_span = recorder.start(
+                f"VectorWrite · batch {batch_number}",
+                parent_id=embedding_stage.span.id,
+                summary="写入当前索引版本的向量快照",
+                input_text=f"batch={batch_number} · {len(batch)} 个向量",
+            )
             for chunk, vector in zip(batch, result.vectors, strict=True):
                 db.add(
                     ChunkEmbedding(
@@ -168,12 +269,58 @@ async def process_index_version(db: Session, gateway: ModelGateway, version_id: 
                 version.input_tokens = (version.input_tokens or 0) + result.input_tokens
             version.usage_source = result.usage_source
             db.commit()
+            recorder.finish(write_span, "succeeded", output=f"已保存 {len(batch)} 条向量快照")
+            embedding_stage.span.attributes_json = {
+                **(embedding_stage.span.attributes_json or {}),
+                "completed_batches": batch_number,
+                "embedded_chunks": version.embedded_chunks,
+            }
+            embedding_stage.span.output_text = f"已完成 {batch_number}／{total_batches} 批"
+            db.commit()
+
+        recorder.finish(
+            embedding_stage,
+            "succeeded",
+            output=f"{total_batches} 批全部完成 · {version.embedded_chunks} 个向量",
+        )
+        if version.usage_source != "provider":
+            recorder.record_event(
+                code="USAGE_UNAVAILABLE",
+                message="Embedding 服务商未返回完整 Token；构建保持成功，用量与成本标记未知。",
+                category="可观测自身",
+                severity="warning",
+                retryable=False,
+                span_id=embedding_stage.span.id,
+            )
+
+        validate_index_span = recorder.start(
+            "ValidateIndex",
+            summary="激活前复核源分块和向量快照完整性",
+            input_text=f"index_version_id={version.id}",
+        )
         db.expire_all()
         version = db.get(IndexVersion, version_id)
         knowledge_base = db.get(KnowledgeBase, version.kb_id)
         chunks = knowledge_chunks(db, version.kb_id)
         if not knowledge_base or chunks_source_hash(chunks) != version.source_hash:
             raise ApiError(409, "INDEX_CONTENT_CHANGED", "构建期间知识分块已变化，请创建新版本")
+        vector_count = db.scalar(
+            select(func.count(ChunkEmbedding.chunk_id)).where(ChunkEmbedding.index_version_id == version.id)
+        )
+        if vector_count != len(chunks):
+            raise ApiError(500, "INDEX_SNAPSHOT_INCOMPLETE", "向量快照数量与源分块不一致", retryable=True)
+        recorder.finish(
+            validate_index_span,
+            "succeeded",
+            output=f"{vector_count} 条向量快照校验通过",
+            attributes={"vector_count": vector_count, "source_hash": version.source_hash},
+        )
+
+        activate_span = recorder.start(
+            "ActivateIndex",
+            summary="事务内切换活动索引并保留旧版本快照",
+            input_text=f"index_version_id={version.id}",
+        )
         previous_active = (
             db.get(IndexVersion, knowledge_base.active_index_version_id)
             if knowledge_base.active_index_version_id
@@ -195,12 +342,38 @@ async def process_index_version(db: Session, gateway: ModelGateway, version_id: 
             for chunk in document.chunks:
                 chunk.status = "ready"
         db.commit()
+        recorder.finish(
+            activate_span,
+            "succeeded",
+            output=f"active_index_version={version.id}",
+            attributes={
+                "previous_index_version_id": previous_active.id if previous_active else None,
+                "active_index_version_id": version.id,
+            },
+        )
+        recorder.finish_root(
+            "succeeded",
+            output=f"索引已激活 · {len(chunks)} 个分块",
+            duration_ms=version.duration_ms,
+        )
         return version
     except ApiError as exc:
         db.rollback()
-        mark_index_failed(db, version_id, exc.code)
+        mark_index_failed(
+            db,
+            version_id,
+            exc.code,
+            safe_message=exc.message,
+            retryable=exc.retryable,
+        )
         raise
     except Exception as exc:
         db.rollback()
-        mark_index_failed(db, version_id, "INDEX_BUILD_FAILED")
+        mark_index_failed(
+            db,
+            version_id,
+            "INDEX_BUILD_FAILED",
+            safe_message="索引构建失败，请稍后重试",
+            retryable=True,
+        )
         raise ApiError(502, "INDEX_BUILD_FAILED", "索引构建失败，请稍后重试", retryable=True) from exc

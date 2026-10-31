@@ -821,17 +821,21 @@ test('用量成本支持分组、明细导出和新增价格规则', async ({ pa
   await expect(page.locator('.ant-message')).toContainText('本次原型会话')
 })
 
-test('联机观测读取真实 Run、Trace、异常与未知用量', async ({ page }) => {
+test('联机观测读取构建 Trace、完整对话快照、异常与未知用量', async ({ page }) => {
   const now = '2026-10-31T12:00:00Z'
-  const makeRun = (id: string, known: boolean) => ({
-    id, trace_id: `trace-${id}`, kind: 'chat', name: known ? '报销材料真实问答' : '未知用量真实问答',
-    target: '员工问答助手', secondary_target: '企业制度知识库', status: 'succeeded', started_at: now,
-    duration_ms: 126, progress: 100, provider: '通义测试', model: 'qwen-plus',
-    usage: known ? { input: 18, output: 6, total: 24, source: 'provider' } : { input: null, output: null, total: null, source: 'unavailable' },
+  const makeRun = (id: string, known: boolean, kind: 'chat' | 'build' = 'chat') => ({
+    id, trace_id: `trace-${id}`, kind,
+    name: kind === 'build' ? '制度索引真实构建' : known ? '报销材料真实问答' : '未知用量真实问答',
+    target: kind === 'build' ? '企业制度知识库' : '员工问答助手',
+    secondary_target: kind === 'build' ? 'index-real · 制度.md' : '企业制度知识库',
+    status: 'succeeded', started_at: now, duration_ms: 126, progress: 100,
+    provider: '通义测试', model: kind === 'build' ? 'text-embedding-v4' : 'qwen-plus',
+    usage: known ? { input: kind === 'build' ? 12 : 18, output: kind === 'build' ? null : 6, total: kind === 'build' ? 12 : 24, source: 'provider' } : { input: null, output: null, total: null, source: 'unavailable' },
     estimated_cost: null, cost_coverage: 0, error_code: null,
-    query: known ? '报销需要哪些材料？' : '入职需要哪些材料？', answer: '依据企业制度回答。',
+    query: kind === 'build' ? null : known ? '报销需要哪些材料？' : '入职需要哪些材料？',
+    answer: kind === 'build' ? null : '依据企业制度回答。',
   })
-  const runs = [makeRun('run-real-ok', true), makeRun('run-real-unknown', false)]
+  const runs = [makeRun('run-real-ok', true), makeRun('run-real-unknown', false), makeRun('run-real-build', true, 'build')]
   const makeDetail = (run: ReturnType<typeof makeRun>) => {
     const root = {
       id: `root-${run.id}`, run_id: run.id, parent_id: null, kind: 'stage', name: 'Chat Run', status: 'succeeded',
@@ -842,7 +846,17 @@ test('联机观测读取真实 Run、Trace、异常与未知用量', async ({ pa
     const context = {
       ...root, id: `context-${run.id}`, parent_id: root.id, name: 'BuildContext', offset_ms: 45, duration_ms: 8,
       summary: '构造最终模型上下文与引用编号', input: '检索结果与历史消息', output: '3 条模型消息 · 1 个引用编号',
-      metadata: { message_count: 3, history_message_count: 1, dynamic_budget_enabled: false, full_snapshot_captured: false },
+      metadata: { message_count: 3, history_message_count: 1, dynamic_budget_enabled: false, full_snapshot_captured: run.id === 'run-real-ok' },
+      context_snapshot: run.id === 'run-real-ok' ? {
+        id: 'snapshot-real-ok',
+        messages: [
+          { role: 'system', content: '你只能依据企业知识作答。\n资料不足时明确说明。' },
+          { role: 'assistant', content: '上一轮真实回答' },
+          { role: 'user', content: '报销需要哪些材料？\n请列出全部材料。' },
+        ],
+        metadata: { context_hash: 'sha256:real-context', message_count: 3, history_limit: 12, full_input_captured: true },
+        created_at: now,
+      } : null,
     }
     const llm = {
       ...root, id: `llm-${run.id}`, parent_id: root.id, kind: 'model', name: 'LLM · stream_chat', offset_ms: 53, duration_ms: 65,
@@ -851,15 +865,31 @@ test('联机观测读取真实 Run、Trace、异常与未知用量', async ({ pa
     }
     return { run, spans: [root, context, llm] }
   }
+  const buildRun = runs[2]
+  const buildRoot = {
+    id: 'root-run-real-build', run_id: buildRun.id, parent_id: null, kind: 'stage', name: 'KnowledgeBuild Run', status: 'succeeded',
+    offset_ms: 0, duration_ms: 126, summary: '真实知识库索引构建', input: 'index-real · 2 个分块', output: '索引已激活',
+    provider: null, model: null, usage: buildRun.usage, estimated_cost: null, attempt: 1, error_code: null,
+    metadata: { index_version: 'index-real', total_chunks: 2 },
+  }
+  const buildDetail = { run: buildRun, spans: [
+    buildRoot,
+    { ...buildRoot, id: 'validate-run-real-build', parent_id: buildRoot.id, name: 'ValidateSource', duration_ms: 8, input: 'source_hash=sha256:real', output: '2 个分块校验通过', usage: null, metadata: { dimensions: 1024 } },
+    { ...buildRoot, id: 'embedding-run-real-build', parent_id: buildRoot.id, name: 'Embedding Stage', offset_ms: 8, duration_ms: 70, input: '1 个 Embedding 批次', output: '1 批成功', metadata: { completed_batches: 1, total_batches: 1 } },
+    { ...buildRoot, id: 'batch-run-real-build', parent_id: 'embedding-run-real-build', kind: 'model', name: 'Embedding · batch 1', offset_ms: 8, duration_ms: 60, input: '2 个分块 · 内容未采集', output: 'vector[1024] × 2', provider: '通义测试', model: 'text-embedding-v4', metadata: { chunk_range: '1–2', attempt: 1 } },
+    { ...buildRoot, id: 'write-run-real-build', parent_id: buildRoot.id, name: 'VectorWrite · batch 1', offset_ms: 78, duration_ms: 20, input: '2 个向量快照', output: '2 条已写入', usage: null, metadata: { chunk_range: '1–2' } },
+    { ...buildRoot, id: 'activate-run-real-build', parent_id: buildRoot.id, name: 'ActivateIndex', offset_ms: 98, duration_ms: 28, input: 'index-real', output: 'active_index_version=index-real', usage: null, metadata: { active_index: 'index-real' } },
+  ] }
   await page.route('**/api/v1/models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
   await page.route('**/api/v1/knowledge-bases', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }))
   await page.route('**/api/v1/observability/runs', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(runs) }))
   await page.route('**/api/v1/observability/runs/run-real-ok', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(makeDetail(runs[0])) }))
   await page.route('**/api/v1/observability/runs/run-real-unknown', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(makeDetail(runs[1])) }))
+  await page.route('**/api/v1/observability/runs/run-real-build', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(buildDetail) }))
   await page.route('**/api/v1/observability/summary', (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({
-      run_count: 2, success_rate: 100, total_tokens: 24, unknown_usage_count: 1, estimated_cost: null, cost_coverage: 0,
-      status_counts: { succeeded: 2 }, trend: ['10/25', '10/26', '10/27', '10/28', '10/29', '10/30', '10/31'].map((day, index) => ({ day, runs: index === 6 ? 2 : 0, failed: 0, tokens: index === 6 ? 24 : 0 })), slow_spans: [],
+      run_count: 3, success_rate: 100, total_tokens: 36, unknown_usage_count: 1, estimated_cost: null, cost_coverage: 0,
+      status_counts: { succeeded: 3 }, trend: ['10/25', '10/26', '10/27', '10/28', '10/29', '10/30', '10/31'].map((day, index) => ({ day, runs: index === 6 ? 3 : 0, failed: 0, tokens: index === 6 ? 36 : 0 })), slow_spans: [],
     }),
   }))
   await page.route('**/api/v1/observability/errors', (route) => route.fulfill({
@@ -871,18 +901,35 @@ test('联机观测读取真实 Run、Trace、异常与未知用量', async ({ pa
   }))
 
   await page.goto('/observability/runs')
-  await expect(page.locator('.obs-demo-notice')).toContainText('真实对话 Trace')
-  await expect(page.locator('tbody tr.ant-table-row')).toHaveCount(2)
+  await expect(page.locator('.obs-demo-notice')).toContainText('真实运行 Trace')
+  await expect(page.locator('tbody tr.ant-table-row')).toHaveCount(3)
+  await expect(page.locator('tbody')).toContainText('run-real-build')
   await expect(page.locator('tbody')).toContainText('24')
   await expect(page.locator('tbody')).toContainText('未提供')
   await expect(page.locator('tbody')).not.toContainText('run-build-017')
-  await page.locator('tbody tr').filter({ hasText: 'run-real-ok' }).getByRole('button', { name: '查看 Trace' }).click()
+
+  await page.locator('tbody tr').filter({ hasText: 'run-real-build' }).getByRole('button', { name: '查看 Trace' }).click()
+  await expect(page.locator('.obs-trace-tree')).toContainText('ValidateSource')
+  await expect(page.locator('.obs-trace-tree')).toContainText('Embedding · batch 1')
+  await expect(page.locator('.obs-trace-tree')).toContainText('VectorWrite · batch 1')
+  await page.locator('.obs-trace-tree').getByRole('button', { name: /Embedding · batch 1/ }).click()
+  await page.getByRole('tab', { name: '调用上下文' }).click()
+  await expect(page.locator('.obs-context-panel')).toContainText('真实构建节点上下文')
+  await expect(page.locator('.obs-context-panel')).toContainText('chunk_range')
+  await expect(page.locator('.obs-context-panel')).not.toContainText('最终发送给模型')
+
+  await page.goto('/observability/runs/run-real-ok')
   await expect(page.locator('.obs-run-summary')).toContainText('24')
   await page.locator('.obs-trace-tree').getByRole('button', { name: /LLM · stream_chat/ }).click()
   await page.getByRole('tab', { name: '调用上下文' }).click()
-  await expect(page.locator('.obs-context-panel')).toContainText('完整消息快照将在阶段 B 接入')
-  await expect(page.locator('.obs-context-panel')).toContainText('full_snapshot_captured')
-  await expect(page.locator('.obs-context-panel')).not.toContainText('最终发送给模型的上下文')
+  await expect(page.locator('.obs-context-panel')).toContainText('最终发送给模型的完整上下文')
+  await expect(page.locator('.obs-context-messages article')).toHaveCount(3)
+  await expect(page.locator('.obs-context-messages')).toContainText('你只能依据企业知识作答。')
+  await expect(page.locator('.obs-context-messages')).toContainText('上一轮真实回答')
+  await expect(page.locator('.obs-context-messages')).toContainText('请列出全部材料。')
+  await expect(page.locator('.obs-context-panel')).toContainText('sha256:real-context')
+  await expect(page.locator('.obs-context-panel')).toContainText('history_limit')
+  await expect(page.locator('.obs-context-panel')).toContainText('当前角色选择不是安全边界')
   await expect(page.locator('.obs-context-panel')).not.toContainText('420')
 
   await page.goto('/observability/errors')
@@ -892,9 +939,11 @@ test('联机观测读取真实 Run、Trace、异常与未知用量', async ({ pa
   await page.getByRole('tab', { name: '用量与异常' }).click()
   await expect(page.locator('.obs-usage-panel')).toContainText('用量或成本未知')
   await expect(page.locator('.obs-usage-panel')).toContainText('未提供')
+  await page.getByRole('tab', { name: '调用上下文' }).click()
+  await expect(page.locator('.obs-context-panel')).toContainText('历史 Run 未采集完整快照')
 
   await page.goto('/observability')
-  await expect(page.locator('.obs-metrics-grid')).toContainText('24')
+  await expect(page.locator('.obs-metrics-grid')).toContainText('36')
   await expect(page.locator('.obs-metrics-grid')).toContainText('1 次 Run 用量未知')
   await page.goto('/observability/usage')
   await expect(page.locator('.obs-usage-alert')).toContainText('不会写入服务端')

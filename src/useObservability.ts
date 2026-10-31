@@ -62,6 +62,12 @@ export function mapObservabilitySpan(dto: ObservabilitySpanDto): ObservabilitySp
     attempt: dto.attempt,
     errorCode: dto.error_code || undefined,
     metadata: dto.metadata,
+    contextSnapshot: dto.context_snapshot ? {
+      id: dto.context_snapshot.id,
+      messages: dto.context_snapshot.messages,
+      metadata: dto.context_snapshot.metadata,
+      createdAt: displayTime(dto.context_snapshot.created_at),
+    } : null,
   }
 }
 

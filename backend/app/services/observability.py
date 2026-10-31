@@ -1,3 +1,5 @@
+import hashlib
+import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -6,7 +8,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db_models import ErrorEvent, ModelCall, ModelConfig, ObservabilitySpan, Provider, QueryRun, utc_now
+from app.db_models import (
+    ContextSnapshot,
+    ErrorEvent,
+    IndexVersion,
+    ModelCall,
+    ModelConfig,
+    ObservabilitySpan,
+    Provider,
+    QueryRun,
+    utc_now,
+)
 from app.errors import ApiError
 from app.providers.gateway import EmbeddingResult
 
@@ -35,24 +47,32 @@ class SpanHandle:
 
 
 class TraceRecorder:
-    """Persists concise trace metadata without capturing secrets or full prompts."""
+    """Persist real chat or index-build spans without capturing provider secrets."""
 
-    def __init__(self, db: Session, run_id: str) -> None:
+    def __init__(self, db: Session, run_id: str | None = None, *, build_id: str | None = None) -> None:
+        if bool(run_id) == bool(build_id):
+            raise ValueError("A trace requires exactly one chat run or index build")
         self.db = db
         self.run_id = run_id
+        self.build_id = build_id
+        self.entity_id = run_id or build_id
+        self.kind = "chat" if run_id else "build"
         self.root = db.scalar(
             select(ObservabilitySpan)
-            .where(ObservabilitySpan.run_id == run_id, ObservabilitySpan.parent_span_id.is_(None))
+            .where(self._scope(ObservabilitySpan), ObservabilitySpan.parent_span_id.is_(None))
             .order_by(ObservabilitySpan.sequence)
         )
         if not self.root:
             raise ValueError("Trace root is missing")
         self.trace_id = self.root.trace_id
         self.sequence = max(
-            [row.sequence for row in db.scalars(select(ObservabilitySpan).where(ObservabilitySpan.run_id == run_id))]
+            [row.sequence for row in db.scalars(select(ObservabilitySpan).where(self._scope(ObservabilitySpan)))]
             or [0]
         )
         self.started = time.perf_counter()
+
+    def _scope(self, model: type[ObservabilitySpan] | type[ModelCall] | type[ErrorEvent]):
+        return model.run_id == self.run_id if self.run_id else model.build_id == self.build_id
 
     def start(
         self,
@@ -65,10 +85,12 @@ class TraceRecorder:
         attributes: dict[str, Any] | None = None,
         provider: Provider | None = None,
         model: ModelConfig | None = None,
+        attempt: int = 1,
     ) -> SpanHandle:
         self.sequence += 1
         span = ObservabilitySpan(
             run_id=self.run_id,
+            build_id=self.build_id,
             trace_id=self.trace_id,
             parent_span_id=parent_id or self.root.id,
             kind=kind,
@@ -90,9 +112,11 @@ class TraceRecorder:
             model_call = ModelCall(
                 span_id=span.id,
                 run_id=self.run_id,
+                build_id=self.build_id,
                 provider_id=provider.id,
                 model_config_id=model.id,
                 capability=model.capability,
+                attempt=attempt,
             )
             self.db.add(model_call)
         self.db.commit()
@@ -162,12 +186,13 @@ class TraceRecorder:
         self.db.add(
             ErrorEvent(
                 run_id=self.run_id,
+                build_id=self.build_id,
                 span_id=span_id,
                 category=category,
                 severity=severity,
                 code=code,
                 safe_message=_bounded(message, 1000),
-                fingerprint=f"chat/{code.lower()}",
+                fingerprint=f"{self.kind}/{code.lower()}",
                 retryable=retryable,
             )
         )
@@ -191,7 +216,7 @@ class TraceRecorder:
         spans = list(
             self.db.scalars(
                 select(ObservabilitySpan)
-                .where(ObservabilitySpan.run_id == self.run_id, ObservabilitySpan.status == "running")
+                .where(self._scope(ObservabilitySpan), ObservabilitySpan.status.in_(["running", "queued"]))
                 .order_by(ObservabilitySpan.sequence.desc())
             )
         )
@@ -224,12 +249,13 @@ class TraceRecorder:
         self.db.add(
             ErrorEvent(
                 run_id=self.run_id,
+                build_id=self.build_id,
                 span_id=spans[0].id if spans else self.root.id,
                 category=category,
                 severity=severity,
                 code=code,
                 safe_message=_bounded(message, 1000),
-                fingerprint=f"chat/{code.lower()}",
+                fingerprint=f"{self.kind}/{code.lower()}",
                 retryable=retryable,
             )
         )
@@ -252,7 +278,72 @@ def create_trace_root(db: Session, run: QueryRun, *, name: str, assistant_id: st
         started_at=utc_now(),
         summary="端到端检索增强问答",
         input_text=_bounded(run.query),
-        attributes_json={"assistant_id": assistant_id, "assistant_name": name, "capture_policy": "summary_only"},
+        attributes_json={"assistant_id": assistant_id, "assistant_name": name, "capture_policy": "full_context"},
     )
     db.add(root)
     return root
+
+
+def create_build_trace_root(db: Session, version: IndexVersion, *, knowledge_name: str) -> ObservabilitySpan:
+    from app.db_models import uuid_str
+
+    root_id = uuid_str()
+    root = ObservabilitySpan(
+        id=root_id,
+        build_id=version.id,
+        trace_id=root_id,
+        parent_span_id=None,
+        kind="stage",
+        name="KnowledgeBuild Run",
+        status="queued",
+        sequence=0,
+        started_at=utc_now(),
+        summary="知识库版本化向量索引构建",
+        input_text=f"{version.id} · {version.total_chunks} 个分块",
+        attributes_json={
+            "knowledge_base_id": version.kb_id,
+            "knowledge_base": knowledge_name,
+            "index_version_id": version.id,
+            "total_chunks": version.total_chunks,
+            "capture_policy": "summary_only",
+        },
+    )
+    db.add(root)
+    return root
+
+
+def capture_context_snapshot(
+    db: Session,
+    *,
+    run_id: str,
+    span_id: str,
+    messages: list[Any],
+    metadata: dict[str, Any],
+) -> ContextSnapshot:
+    role_names = {"human": "user", "ai": "assistant", "system": "system"}
+    serialized = [
+        {
+            "role": role_names.get(message.type, message.type),
+            "content": (
+                message.content
+                if isinstance(message.content, str)
+                else json.dumps(message.content, ensure_ascii=False)
+            ),
+        }
+        for message in messages
+    ]
+    canonical = json.dumps(serialized, ensure_ascii=False, separators=(",", ":"))
+    snapshot = ContextSnapshot(
+        run_id=run_id,
+        span_id=span_id,
+        messages_json=serialized,
+        metadata_json={
+            **metadata,
+            "message_count": len(serialized),
+            "context_hash": f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}",
+            "full_snapshot_captured": True,
+        },
+    )
+    db.add(snapshot)
+    db.flush()
+    return snapshot

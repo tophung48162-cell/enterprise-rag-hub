@@ -28,6 +28,12 @@ export interface ObservabilitySpan {
   attempt?: number
   errorCode?: string
   metadata: Record<string, unknown>
+  contextSnapshot?: {
+    id: string
+    messages: Array<{ role: string; content: string }>
+    metadata: Record<string, unknown>
+    createdAt: string
+  } | null
 }
 
 export interface ObservabilityRun {

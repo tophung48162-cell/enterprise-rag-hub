@@ -24,7 +24,7 @@ from app.schemas import AssistantInput, ChatRequest, CitationOut, RetrievalReque
 from app.security import decrypt_secret
 from app.services.assistants import assistant_kb_ids, get_assistant, validate_assistant
 from app.services.configs import get_provider
-from app.services.observability import TraceRecorder, create_trace_root, safe_error
+from app.services.observability import TraceRecorder, capture_context_snapshot, create_trace_root, safe_error
 from app.services.retrieval import retrieve_knowledge
 
 
@@ -299,16 +299,31 @@ async def stream_grounded_chat(
             provider = get_provider(db, model_config.provider_id)
             history = _history(db, prepared)
             messages: list[BaseMessage] = [system, *history, prompt]
+            snapshot = capture_context_snapshot(
+                db,
+                run_id=prepared.run_id,
+                span_id=context_span.span.id,
+                messages=messages,
+                metadata={
+                    "history_message_count": len(history),
+                    "history_limit": 12,
+                    "citation_count": len(citations),
+                    "context_characters": len(context),
+                    "dynamic_budget_enabled": False,
+                },
+            )
             recorder.finish(
                 context_span,
                 "succeeded",
-                output=f"{len(messages)} 条模型消息 · {len(citations)} 个引用编号",
+                output=f"{len(messages)} 条模型消息 · {len(citations)} 个引用编号 · 完整快照已保存",
                 attributes={
                     "message_count": len(messages),
                     "history_message_count": len(history),
                     "context_characters": len(context),
                     "dynamic_budget_enabled": False,
-                    "full_snapshot_captured": False,
+                    "full_snapshot_captured": True,
+                    "context_snapshot_id": snapshot.id,
+                    "context_hash": snapshot.metadata_json["context_hash"],
                 },
             )
 
@@ -317,7 +332,7 @@ async def stream_grounded_chat(
                 kind="model",
                 summary="LangChain ChatOpenAI 流式生成",
                 input_text=f"System + {len(history)} 条历史 + {len(citations)} 个知识片段 + 当前问题",
-                attributes={"stream": True, "full_input_captured": False},
+                attributes={"stream": True, "full_input_captured": True, "context_snapshot_id": snapshot.id},
                 provider=provider,
                 model=model_config,
             )

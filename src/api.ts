@@ -256,7 +256,7 @@ export interface ObservabilityUsageDto {
 export interface ObservabilityRunDto {
   id: string
   trace_id: string
-  kind: 'chat'
+  kind: 'chat' | 'build'
   name: string
   target: string
   secondary_target: string
@@ -272,6 +272,13 @@ export interface ObservabilityRunDto {
   error_code: string | null
   query: string
   answer: string
+}
+
+export interface ObservabilityContextSnapshotDto {
+  id: string
+  messages: Array<{ role: string; content: string }>
+  metadata: Record<string, unknown>
+  created_at: string
 }
 
 export interface ObservabilitySpanDto {
@@ -293,6 +300,7 @@ export interface ObservabilitySpanDto {
   attempt: number
   error_code: string | null
   metadata: Record<string, unknown>
+  context_snapshot?: ObservabilityContextSnapshotDto | null
 }
 
 export interface ObservabilityRunDetailDto {

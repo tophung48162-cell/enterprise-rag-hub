@@ -1,9 +1,9 @@
 # 知枢 · RAG 中台可观测模块设计（1.0）
 
-- 状态：**推荐方案已于 2026-10-31 确认；阶段 A 真实对话 Trace 已接入前后端**
-- 日期：2026-10-29；原型与阶段 A 更新：2026-10-31
+- 状态：**推荐方案已于 2026-10-31 确认；阶段 B 真实对话 Trace、索引构建 Trace 与完整消息快照已接入前后端**
+- 日期：2026-10-29；原型与阶段 A／B 更新：2026-10-31
 - 目标：让知识库构建、检索增强问答、模型与工具调用、异常和用量成本可以在同一条调用链中定位与复盘
-- 当前基础：已有知识库任务、索引版本、问答 `QueryRun`、消息、引用快照、服务商 Token 和耗时记录；阶段 A 新增 Span、ModelCall、ErrorEvent 及真实查询接口。React 联机展示真实对话 Trace、异常和用量，断线时保留明确标记的脱敏原型。构建 Trace、完整上下文快照、工具／Skill 调用、异常指纹聚合和成本核算仍未接入
+- 当前基础：已有知识库任务、索引版本、问答 `QueryRun`、消息、引用快照、服务商 Token 和耗时记录；阶段 A 新增 Span、ModelCall、ErrorEvent 及真实查询接口，阶段 B 增加构建关联和 `context_snapshots`。React 联机展示真实构建／对话 Trace、完整消息快照、异常和用量，断线时保留明确标记的脱敏原型。OCR／解析／分块 Trace、工具／Skill 调用、异常指纹聚合和成本核算仍未接入
 
 ## 阶段 A 已交付范围（2026-10-31）
 
@@ -11,11 +11,18 @@
 - 新表 `observability_spans`、`model_calls`、`error_events`，迁移版本 `0005_observability`；历史 QueryRun 无 Span 时详情返回空数组，不伪造节点。
 - 记录 LoadConfig、逐库 Retrieval、QueryEmbedding、VectorSearch、可选 Rerank、MergeAndRank、BuildContext、LLM、PersistResult，以及成功、失败和停止状态。异常时闭合仍为 running 的 Span／ModelCall。
 - 模型调用记录服务商、模型、能力、耗时、首 Token、输入／输出／总 Token 和 `provider/unavailable` 用量来源；服务商未返回用量时运行仍可成功，同时生成 `USAGE_UNAVAILABLE` 警告。
-- 提供 `GET /api/v1/observability/summary`、`/runs`、`/runs/{run_id}`、`/errors`。总览含真实状态、7 日趋势与慢模型调用；异常本阶段逐条返回，`count=1`，尚未按指纹聚合。
-- 仅保存有界摘要和结构化元数据，不保存密钥、完整 Prompt 或 Base64。`estimated_cost=null`、`cost_coverage=0`，不做价格或账单推算。
-- 联机前端展示真实总览、Run、Trace、异常和 Token；BuildContext 只展示实际元数据，并明确提示“完整消息快照将在阶段 B 接入”。价格规则仍仅为页面原型，不写服务端。
+- 提供 `GET /api/v1/observability/summary`、`/runs`、`/runs/{run_id}`、`/errors`。总览含真实状态、7 日趋势与慢模型调用；异常逐条返回，`count=1`，尚未按指纹聚合。
+- `estimated_cost=null`、`cost_coverage=0`，不做价格或账单推算；密钥、请求头和 Base64 不进入观测字段。
 
-阶段 A 自动化验收覆盖成功、失败脱敏、用量缺失、历史 Run 兼容和真实前端联动；停止路径已实现，但未把单元级闭合测试描述为完整浏览器断流验收。真实云账号、PostgreSQL／pgvector 与 Docker 环境仍需另行联调。
+## 阶段 B 已交付范围（2026-10-31）
+
+- 复用 `index_versions.id` 作为构建 Run ID；迁移 `0006_build_context` 为 Span、ModelCall、ErrorEvent 增加可空 `build_id`，并将 `run_id` 改为可空，分别保留问答与构建的数据库级联删除。
+- 真实构建记录 ValidateSource、Embedding Stage、每批 Embedding、VectorWrite、ValidateIndex 和 ActivateIndex；重试在同一 Trace 追加 `attempt` 递增的批次调用，维度失败等异常闭合运行中节点。不伪造 OCR、解析、分块、工具或 Skill 节点。
+- 新增 `context_snapshots`，在 LLM 调用前保存实际 System／User／Assistant 消息数组、元数据和 SHA‑256 上下文哈希；快照与 BuildContext 一一关联，消息内容与网关实际输入一致。
+- 总览、Run 列表、Trace 详情、异常和用量合并构建与问答；构建只展示真实元数据和输入输出，对话按快照顺序展示完整消息。历史 Run 无快照时明确提示，不根据问答消息事后重建。
+- 完整快照可能包含企业原文，页面明确保留“角色选择不是安全边界”的提示。价格规则仍仅为页面原型，异常仍逐条返回；本阶段不包含动态 Token 预算、快照采样与到期清理、Harness 心跳扫描或正式账单。
+
+阶段 A／B 自动化验收覆盖成功、失败脱敏、用量缺失、构建成功与维度失败、重试第 2 次尝试、快照与网关输入一致、历史 Run 兼容和真实前端联动；停止路径已实现，但未把单元级闭合测试描述为完整浏览器断流验收。真实云账号、PostgreSQL／pgvector 与 Docker 环境仍需另行联调。
 
 ## 1. 建设目标与边界
 
@@ -192,16 +199,18 @@ Trace 中可对照查看：
 5. **预算与截断**：模型上下文窗口、系统／历史／知识／输出预留、实际占用、裁剪顺序和被裁剪项。
 6. **完整性校验**：上下文快照哈希、消息数量、是否完整保存、存储位置和采集时间。
 
-### 7.2 当前实现的缺口
+### 7.2 当前实现与剩余缺口
 
-现有问答只按 Top K、候选池和最近 12 条消息限制上下文，尚无完整 Token 预算与动态裁剪。因此第一期原型可以设计预算区域，但后端埋点必须先实现真实的最终消息快照和预算计算，才能展示“已截断”等结论；在此之前只能显示“未启用动态预算”。
+阶段 B 已在 LLM 调用前将最终消息数组保存到 PostgreSQL `context_snapshots`，保存实际角色、完整内容、消息数量、历史限制和 SHA‑256 上下文哈希，并通过 BuildContext 详情返回。前端按快照顺序展示原文，不从问答消息事后重建；旧 Run 无快照时只显示真实元数据。
+
+现有问答仍只按 Top K、候选池和最近 12 条消息限制上下文，没有完整 Token 预算与动态裁剪。因此联机页面不展示原型中的预算数值或“已截断”等未采集结论。快照采样、最大字节数、头尾截断、私有 MinIO 大对象 offload 和到期清理仍未实现。
 
 ### 7.3 快照策略
 
-- 小文本存 PostgreSQL，大输入输出和完整消息数组存私有 MinIO，数据库保留元数据、哈希和对象键。
-- 默认保存结构化摘要；原文采集按运行类型配置开关、采样率和最大字节数。
-- 超长内容保留头尾、长度、哈希和 `truncated=true`，不能静默丢失。
-- 内容脱敏在持久化前执行；仅记录规则版本，不保存用于还原敏感原文的映射表。
+- 当前小文本和完整消息数组存 PostgreSQL；后续大输入输出可 offload 到私有 MinIO，数据库保留元数据、哈希和对象键。
+- 当前新对话保存完整消息；可配置开关、采样率和最大字节数属于后续补强，不能宣称已启用。
+- 后续超长内容需要保留头尾、长度、哈希和 `truncated=true`，不能静默丢失。
+- 当前快照保留企业原文且不在持久化前做内容脱敏；密钥、请求头和 Base64 仍排除。原文脱敏、受控读取和保留清理由后续安全能力实现。
 
 ## 8. 异常中心与 Harness 事件
 
@@ -283,17 +292,17 @@ API、Celery Worker 和子任务通过任务载荷传播 `trace_id / run_id / pa
 
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
-| `observability_runs` | `id`、`trace_id`、`kind`、`status`、`kb_id`、`document_id`、`index_version_id`、`assistant_id`、`conversation_id`、`started_at`、`ended_at`、`duration_ms`、`attempt`、`metadata_json` | 统一运行索引；现有 `query_runs.id` 作为问答 Run ID，保留业务明细，避免复制问答正文 |
-| `observability_spans` | `id`、`trace_id`、`run_id`、`parent_span_id`、`kind`、`name`、`status`、`started_at`、`ended_at`、`duration_ms`、`sequence`、`attributes_json`、`error_code` | 构建、检索、上下文、工具、Skill、Agent 和系统事件统一节点 |
-| `model_calls` | `id`、`span_id`、`provider_id`、`model_config_id`、`remote_model_id`、`capability`、`provider_request_id`、`attempt`、`status`、`input_object_key`、`output_object_key`、`first_token_ms`、`duration_ms`、`error_code` | 一次真实 provider 请求一条，重试不覆盖 |
-| `tool_calls` | `id`、`span_id`、`name`、`version`、`input_json`、`output_object_key`、`status`、`attempt`、`duration_ms`、`error_code` | 真实工具调用及结构化参数 |
-| `skill_calls` | `id`、`span_id`、`name`、`version`、`reason`、`input_json`、`output_object_key`、`status`、`exit_reason`、`duration_ms`、`error_code` | Skill 与子 Span 关联，不重复计算 Token |
-| `context_snapshots` | `id`、`run_id`、`span_id`、`kind`、`object_key`、`content_hash`、`message_count`、`byte_size`、`budget_json`、`truncated`、`redaction_version`、`created_at` | 保存最终实际上下文和预算证据 |
-| `usage_records` | `id`、`model_call_id`、`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`、`total_tokens`、`request_count`、`raw_usage_json`、`usage_source` | 原始与标准化用量并存，未知保持 `null` |
-| `error_events` | `id`、`run_id`、`span_id`、`category`、`severity`、`code`、`safe_message`、`fingerprint`、`retryable`、`internal_object_key`、`occurred_at` | 业务、模型和 Harness 异常统一检索 |
-| `price_rules` | `id`、`provider_id`、`remote_model_id`、`capability`、`currency`、`unit_prices_json`、`effective_from`、`effective_to`、`source_note` | 版本化价格，仅用于成本估算 |
+| `observability_runs` | `id`、`trace_id`、`kind`、`status`、`kb_id`、`document_id`、`index_version_id`、`assistant_id`、`conversation_id`、`started_at`、`ended_at`、`duration_ms`、`attempt`、`metadata_json` | 未来可选统一运行索引；当前复用 `query_runs.id` 和 `index_versions.id`，不新建业务状态机 |
+| `observability_spans` | `id`、`trace_id`、`run_id`、`build_id`、`parent_span_id`、`kind`、`name`、`status`、`started_at`、`ended_at`、`duration_ms`、`sequence`、`attributes_json`、`error_code` | 当前以可空 `run_id`／`build_id` 分别关联问答和构建；工具、Skill、Agent 仍只在实际发生后接入 |
+| `model_calls` | `id`、`span_id`、`run_id`、`build_id`、`provider_id`、`model_config_id`、`remote_model_id`、`capability`、`provider_request_id`、`attempt`、`status`、`input_object_key`、`output_object_key`、`first_token_ms`、`duration_ms`、`error_code` | 一次真实 provider 请求一条，重试不覆盖 |
+| `tool_calls` | `id`、`span_id`、`name`、`version`、`input_json`、`output_object_key`、`status`、`attempt`、`duration_ms`、`error_code` | 未来真实工具调用及结构化参数 |
+| `skill_calls` | `id`、`span_id`、`name`、`version`、`reason`、`input_json`、`output_object_key`、`status`、`exit_reason`、`duration_ms`、`error_code` | 未来 Skill 与子 Span 关联，不重复计算 Token |
+| `context_snapshots` | `id`、`run_id`、`span_id`、`messages_json`、`metadata_json`、`created_at` | 当前保存最终实际消息数组和含上下文 SHA‑256 哈希的元数据；大对象、预算和截断字段留待后续 |
+| `usage_records` | `id`、`model_call_id`、`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`、`total_tokens`、`request_count`、`raw_usage_json`、`usage_source` | 未来原始与标准化用量并存，未知保持 `null`；当前标准化字段在 `model_calls` |
+| `error_events` | `id`、`run_id`、`build_id`、`span_id`、`category`、`severity`、`code`、`safe_message`、`fingerprint`、`retryable`、`created_at` | 当前逐条记录问答和构建异常，不做指纹聚合；内部堆栈对象留待后续 |
+| `price_rules` | `id`、`provider_id`、`remote_model_id`、`capability`、`currency`、`unit_prices_json`、`effective_from`、`effective_to`、`source_note` | 未来版本化价格，仅用于成本估算 |
 
-所有大对象键均指向私有存储；接口通过受控读取，不暴露永久公网地址。建立 `trace_id`、`run_id`、状态、开始时间、知识库／应用、模型和错误码索引，列表统一游标分页。
+当前快照直接保存于 PostgreSQL，不采集密钥、请求头或 Base64；未来大对象键均指向私有存储，接口通过受控读取，不暴露永久公网地址。已建立 `trace_id`、`run_id`、`build_id` 等关联索引；统一游标分页和更完整的业务筛选仍待后续。
 
 ### 10.3 状态机
 
@@ -387,9 +396,9 @@ GET|POST|PATCH /api/v1/observability/price-rules
 
 ### 阶段 B：构建 Trace、异常中心与上下文
 
-- 覆盖 OCR、分块、Embedding 批次、索引写入和激活，传播 Celery 链路 ID。
-- 保存最终模型消息、引用映射和预算证据，接入 Harness 超时／离线／断开等事件。
-- 验收：故障注入能定位到具体批次和尝试；上下文快照与实际发送内容哈希一致；Worker 异常不会永久显示运行中。
+- 已交付：源校验、Embedding 批次、向量写入、索引校验和激活的真实 Trace；异常闭合与重试尝试；最终模型消息和上下文哈希；构建／问答合并查询与前端详情。
+- 已验收：维度故障能定位到具体批次，重试产生第 2 次尝试；快照消息与网关实际输入一致；历史无 Trace／快照保持兼容。
+- 尚未交付：OCR、解析和分块 Trace，动态预算证据，Harness 心跳／离线扫描，快照采样与保留清理。进程崩溃后的超时闭合不能仅凭当前单元测试视为完成。
 
 ### 阶段 C：工具／Skill／Agent 与成本分析
 
@@ -407,7 +416,7 @@ GET|POST|PATCH /api/v1/observability/price-rules
 
 ## 16. 推荐第一期原型范围
 
-建议第一轮原型直接覆盖完整信息架构，但后端按阶段 A 优先实施：
+第一轮原型已覆盖完整信息架构，后端按阶段实施：
 
 1. 可观测总览：真实空状态、核心指标、趋势和异常排行。
 2. Run 列表与统一详情：构建／对话切换、调用树、时间轴和节点抽屉。
@@ -422,10 +431,10 @@ GET|POST|PATCH /api/v1/observability/price-rules
 用户已选择“按推荐方案”，对应确认结果如下：
 
 1. **原型范围**：按第 16 节一次补齐七类页面，再分阶段接后端。
-2. **原文采集**：采用默认脱敏、有限保留方案；成功调用原文默认关闭或采样，失败原文需在授权且开启时采集。
-3. **保留期**：采用“原文 7 天、Trace 30 天、聚合 90 天”的默认值。
+2. **原文采集目标**：采用默认脱敏、有限保留方案；成功调用原文默认关闭或采样，失败原文需在授权且开启时采集。
+3. **保留期目标**：采用“原文 7 天、Trace 30 天、聚合 90 天”的默认值。
 4. **成本口径**：只提供按价格规则估算的成本和覆盖率，不接服务商正式账单。
 5. **权限前提**：真实登录上线前，观测模块只用于受控内部环境，不承诺角色间的数据安全隔离。
 6. **实施顺序**：先完成“对话 Trace + 构建 Trace + 异常 + 用量”，再接工具／Skill／Agent 和成本价格规则。
 
-**前端原型与阶段 A 真实对话 Trace 已完成；下一阶段进入阶段 B 的知识库构建 Trace、完整上下文快照和 Harness 异常补强。异常指纹聚合与价格规则后端仍按后续阶段推进。**
+**前端原型与阶段 B 的对话 Trace、索引构建 Trace、完整消息快照已完成；异常指纹聚合与价格规则后端仍按后续阶段推进。当前为支持真实复盘先保存新对话完整消息，第 2／3 项采样、脱敏和保留策略尚未落地，不能视为已经实施。**

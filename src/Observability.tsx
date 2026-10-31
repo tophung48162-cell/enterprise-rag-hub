@@ -43,7 +43,7 @@ function SpanKindIcon({ span }: { span: ObservabilitySpan }) {
 }
 
 function DemoNotice({ connected }: { connected: boolean }) {
-  if (connected) return <div className="obs-demo-notice"><CheckCircleOutlined /><span><b>真实对话 Trace · 服务端数据</b>　当前已接入在线问答调用链、模型用量与异常事件；知识库构建、完整消息快照和价格规则后端将在后续阶段接入。</span><Tag color="success">阶段 A</Tag></div>
+  if (connected) return <div className="obs-demo-notice"><CheckCircleOutlined /><span><b>真实运行 Trace · 服务端数据</b>　已接入在线问答、知识库构建调用链、完整对话消息快照、模型用量与异常事件；异常指纹聚合和价格规则后端仍待接入。</span><Tag color="success">阶段 B</Tag></div>
   return <div className="obs-demo-notice"><InfoCircleOutlined /><span><b>交互原型 · 脱敏样例数据</b>　页面用于确认功能与布局，尚未连接真实观测接口；工具、Skill 与 Agent 节点仅在明确标记的测试夹具中出现。</span><Tag>非真实监控</Tag></div>
 }
 
@@ -111,10 +111,10 @@ export function ObservabilityOverview({ connected = false }: { connected?: boole
     const color = item.status === 'succeeded' ? '#2fa47c' : item.status === 'failed' ? '#dc6a62' : item.status === 'stopped' ? '#e0a24b' : '#4c7df0'
     return `${color} ${start}% ${cursor}%`
   }).join(',') : '#e8edf5 0% 100%'
-  return <PageShell connected={connected} active="overview" title="可观测总览" description={connected ? '追踪真实在线问答的运行状态、调用链路与服务商 Token 用量。' : '从知识构建到在线问答，统一追踪运行状态、调用链路与资源消耗。'} actions={<Space><Select aria-label="总览时间范围" value="7d" disabled={connected} options={[{ value: '24h', label: '最近 24 小时' }, { value: '7d', label: '最近 7 天' }, { value: '30d', label: '最近 30 天' }]} /><Button loading={loading} icon={<ReloadOutlined />} onClick={() => connected ? void reload() : message.success('原型样例已刷新')}>刷新</Button></Space>}>
+  return <PageShell connected={connected} active="overview" title="可观测总览" description={connected ? '追踪真实知识库构建与在线问答的运行状态、调用链路和 Token 用量。' : '从知识构建到在线问答，统一追踪运行状态、调用链路与资源消耗。'} actions={<Space><Select aria-label="总览时间范围" value="7d" disabled={connected} options={[{ value: '24h', label: '最近 24 小时' }, { value: '7d', label: '最近 7 天' }, { value: '30d', label: '最近 30 天' }]} /><Button loading={loading} icon={<ReloadOutlined />} onClick={() => connected ? void reload() : message.success('原型样例已刷新')}>刷新</Button></Space>}>
     {error && <Alert className="space-bottom" type="error" showIcon title="观测数据读取失败" description={error} />}
     <div className="obs-metrics-grid">
-      <MetricCard label="运行次数" value={number(runCount)} note={connected ? '在线问答 · 全部真实记录' : '构建与问答 · 样例范围'} icon={<BranchesOutlined />} onClick={() => navigate('/observability/runs')} />
+      <MetricCard label="运行次数" value={number(runCount)} note={connected ? '构建与问答 · 全部真实记录' : '构建与问答 · 样例范围'} icon={<BranchesOutlined />} onClick={() => navigate('/observability/runs')} />
       <MetricCard label="运行成功率" value={`${summary?.success_rate ?? successRate(observabilityRuns)}%`} note={`${failedRuns} 次失败 · 运行中不计入`} icon={<CheckCircleOutlined />} tone="green" onClick={() => navigate('/observability/runs?status=failed')} />
       <MetricCard label="已知 Tokens" value={number(totalTokens)} note={`${unknownUsage} 次 Run 用量未知`} icon={<NodeIndexOutlined />} tone="violet" onClick={() => navigate('/observability/usage')} />
       <MetricCard label="估算成本" value={money(knownCost)} note={connected ? '价格规则后端尚未接入' : '非服务商账单 · CNY'} icon={<DollarOutlined />} tone="orange" onClick={() => navigate('/observability/usage')} />
@@ -127,7 +127,7 @@ export function ObservabilityOverview({ connected = false }: { connected?: boole
       <Card title="异常事件" extra={<Button type="link" onClick={() => navigate('/observability/errors')}>进入异常中心 <ArrowRightOutlined /></Button>}><div className="obs-error-list">{errors.slice(0, 4).map((item) => <button key={item.id} onClick={() => navigate(`/observability/runs/${item.runId}?span=${item.spanId}`)}><span className={`obs-error-icon severity-${item.severity}`}><WarningOutlined /></span><span><b>{item.code}</b><small>{item.category} · {item.message}</small></span><strong>{item.count}<small> 次</small></strong><ArrowRightOutlined /></button>)}{!errors.length && <Empty description="暂无异常事件" />}</div></Card>
       <Card title="慢模型调用" extra={<Tag>耗时 Top 5</Tag>}><div className="obs-slow-list">{slowSpans.map((span, index) => <button key={span.id} onClick={() => navigate(`/observability/runs/${span.runId}?span=${span.id}`)}><span className="obs-rank">0{index + 1}</span><span><b>{span.model}</b><small>{span.name} · {span.provider}</small></span><StatusTag status={span.status} /><strong>{formatDuration(span.durationMs)}</strong></button>)}{!slowSpans.length && <Empty description="暂无模型调用" />}</div></Card>
     </div>
-    <Card className="obs-cost-coverage"><div><span className="obs-coverage-icon"><LineChartOutlined /></span><div><b>成本覆盖率需要与金额一起阅读</b><p>{connected ? '阶段 A 仅汇总真实 Token；价格规则尚未持久化，所有成本保持未知，不按 0 计入。' : '2 次 Run 存在价格或 Token 缺口，对应金额显示“未知”，不按 0 计入完整成本。'}</p></div></div><Button onClick={() => navigate('/observability/usage')}>检查未知用量</Button></Card>
+    <Card className="obs-cost-coverage"><div><span className="obs-coverage-icon"><LineChartOutlined /></span><div><b>成本覆盖率需要与金额一起阅读</b><p>{connected ? '当前汇总构建与问答的真实 Token；价格规则尚未持久化，所有成本保持未知，不按 0 计入。' : '2 次 Run 存在价格或 Token 缺口，对应金额显示“未知”，不按 0 计入完整成本。'}</p></div></div><Button onClick={() => navigate('/observability/usage')}>检查未知用量</Button></Card>
   </PageShell>
 }
 
@@ -151,11 +151,11 @@ export function ObservabilityRuns({ connected = false }: { connected?: boolean }
     { title: '开始时间', dataIndex: 'startedAt', width: 170 },
     { title: '操作', key: 'action', fixed: 'right', width: 90, render: (_, run) => <Button type="link" onClick={() => navigate(`/observability/runs/${run.id}`)}>查看 Trace</Button> },
   ]
-  return <PageShell connected={connected} active="runs" title="运行链路" description={connected ? '检索真实在线问答 Run，进入单次调用树与结构化上下文现场。' : '统一检索知识库构建和在线对话 Run，进入单次调用树与上下文现场。'} actions={<Space><Button loading={loading} icon={<ReloadOutlined />} onClick={() => void reload()}>刷新</Button><Button icon={<DownloadOutlined />} onClick={() => downloadRuns(runs, connected)}>导出当前结果</Button></Space>}>
+  return <PageShell connected={connected} active="runs" title="运行链路" description={connected ? '检索真实知识库构建与在线问答 Run，进入单次调用树和上下文现场。' : '统一检索知识库构建和在线对话 Run，进入单次调用树与上下文现场。'} actions={<Space><Button loading={loading} icon={<ReloadOutlined />} onClick={() => void reload()}>刷新</Button><Button icon={<DownloadOutlined />} onClick={() => downloadRuns(runs, connected)}>导出当前结果</Button></Space>}>
     {error && <Alert className="space-bottom" type="error" showIcon title="运行记录读取失败" description={error} />}
-    <div className="obs-filter-panel"><Input prefix={<SearchOutlined />} placeholder="搜索 Run ID、问题、知识库或应用" value={search} onChange={(event) => setSearch(event.target.value)} allowClear /><Select aria-label="运行类型" value={kind} onChange={setKind} options={[{ value: 'all', label: '全部类型' }, { value: 'build', label: connected ? '知识库构建（待接入）' : '知识库构建' }, { value: 'chat', label: '在线问答' }]} /><Select aria-label="运行状态" value={status} onChange={setStatus} options={[{ value: 'all', label: '全部状态' }, ...Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))]} /><Select aria-label="服务商" value={provider} onChange={setProvider} options={[{ value: 'all', label: '全部服务商' }, ...providerOptions.map((value) => ({ value, label: value }))]} /><Button onClick={() => { setSearch(''); setKind('all'); setStatus('all'); setProvider('all') }}>重置</Button></div>
-    <div className="obs-result-summary"><span>共 <b>{runs.length}</b> 次运行</span><span><i className="live-dot" />{connected ? '真实对话数据 · 可手动刷新' : '原型数据不自动更新'}</span></div>
-    <Card className="obs-table-card"><Table loading={loading} rowKey="id" columns={columns} dataSource={runs} scroll={{ x: 1330 }} pagination={false} locale={{ emptyText: <Empty description={connected && kind === 'build' ? '知识库构建 Trace 将在阶段 B 接入' : '没有匹配的运行记录'} /> }} /></Card>
+    <div className="obs-filter-panel"><Input prefix={<SearchOutlined />} placeholder="搜索 Run ID、问题、知识库或应用" value={search} onChange={(event) => setSearch(event.target.value)} allowClear /><Select aria-label="运行类型" value={kind} onChange={setKind} options={[{ value: 'all', label: '全部类型' }, { value: 'build', label: '知识库构建' }, { value: 'chat', label: '在线问答' }]} /><Select aria-label="运行状态" value={status} onChange={setStatus} options={[{ value: 'all', label: '全部状态' }, ...Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))]} /><Select aria-label="服务商" value={provider} onChange={setProvider} options={[{ value: 'all', label: '全部服务商' }, ...providerOptions.map((value) => ({ value, label: value }))]} /><Button onClick={() => { setSearch(''); setKind('all'); setStatus('all'); setProvider('all') }}>重置</Button></div>
+    <div className="obs-result-summary"><span>共 <b>{runs.length}</b> 次运行</span><span><i className="live-dot" />{connected ? '真实构建与对话数据 · 可手动刷新' : '原型数据不自动更新'}</span></div>
+    <Card className="obs-table-card"><Table loading={loading} rowKey="id" columns={columns} dataSource={runs} scroll={{ x: 1330 }} pagination={false} locale={{ emptyText: <Empty description="没有匹配的运行记录" /> }} /></Card>
   </PageShell>
 }
 
@@ -190,11 +190,37 @@ function TraceWaterfall({ run, spans, selected, onSelect }: { run: Observability
 
 function ContextInspector({ run, span, spans, connected }: { run: ObservabilityRun; span: ObservabilitySpan; spans: ObservabilitySpan[]; connected: boolean }) {
   if (connected) {
+    const metadataItems = (metadata: Record<string, unknown>) => Object.entries(metadata).map(([key, value]) => ({
+      key,
+      label: key,
+      children: typeof value === 'object' ? JSON.stringify(value) : String(value),
+    }))
+    if (run.kind === 'build') return <div className="obs-context-panel">
+      <div className="obs-context-title"><div><b>真实构建节点上下文</b><p>展示本次构建实际记录的参数、批次与结果，不伪造 System／User 消息。</p></div><Tag color="blue">知识库构建</Tag></div>
+      <Descriptions column={2} size="small" items={metadataItems(span.metadata)} />
+      <div className="obs-code-block"><div><CodeOutlined /> 节点实际输入</div><pre>{span.input || '未采集'}</pre></div>
+      <div className="obs-code-block"><div><CodeOutlined /> 节点实际输出</div><pre>{span.output || '未采集'}</pre></div>
+    </div>
     const contextSpan = spans.find((item) => item.name === 'BuildContext') || span
+    const snapshot = contextSpan.contextSnapshot
+    if (snapshot) return <div className="obs-context-panel">
+      <div className="obs-context-title"><div><b>最终发送给模型的完整上下文</b><p>按真实快照顺序展示每条消息；内容来自 LLM 调用前的实际输入，而非事后重建。</p></div><Tag icon={<CheckCircleOutlined />} color="success">完整快照</Tag></div>
+      <Alert type="warning" showIcon title="完整上下文包含企业原文" description="当前角色选择不是安全边界；真实登录与服务端授权上线前，不应在不可信网络中开放敏感原文查看。" />
+      <div className="obs-context-messages">{snapshot.messages.map((message, index) => <article key={`${snapshot.id}-${index}`}>
+        <div><Tag color={message.role === 'system' ? 'blue' : message.role === 'user' ? 'green' : 'default'}>{message.role.toUpperCase()}</Tag><b>消息 {index + 1}</b><span>完整原文</span></div>
+        <p style={{ whiteSpace: 'pre-wrap' }}>{message.content}</p>
+      </article>)}</div>
+      <Descriptions size="small" column={2} items={[
+        { key: 'snapshot', label: '快照 ID', children: snapshot.id },
+        { key: 'captured_at', label: '采集时间', children: snapshot.createdAt },
+        { key: 'messages', label: '实际消息数', children: `${snapshot.messages.length} 条` },
+        ...metadataItems(snapshot.metadata),
+      ]} />
+    </div>
     return <div className="obs-context-panel">
       <div className="obs-context-title"><div><b>真实调用上下文元数据</b><p>仅展示 BuildContext 实际记录的结构化字段，不重建或推测模型消息。</p></div><Tag color="warning">未采集完整快照</Tag></div>
-      <Alert type="info" showIcon title="完整消息快照将在阶段 B 接入" description="当前没有保存 System、历史消息和知识原文的完整 Prompt；因此不展示 Token 预算、截断原因或上下文哈希等未采集信息。" />
-      <Descriptions column={2} size="small" items={Object.entries(contextSpan.metadata).map(([key, value]) => ({ key, label: key, children: typeof value === 'object' ? JSON.stringify(value) : String(value) }))} />
+      <Alert type="info" showIcon title="历史 Run 未采集完整快照" description="这条记录没有保存 System、历史消息和知识原文的完整 Prompt；因此不展示 Token 预算、截断原因或上下文哈希等未采集信息。" />
+      <Descriptions column={2} size="small" items={metadataItems(contextSpan.metadata)} />
       <div className="obs-code-block"><div><CodeOutlined /> BuildContext 实际输入摘要</div><pre>{contextSpan.input || '未采集'}</pre></div>
       <div className="obs-code-block"><div><CodeOutlined /> BuildContext 实际输出摘要</div><pre>{contextSpan.output || '未采集'}</pre></div>
     </div>
@@ -337,8 +363,8 @@ export function ObservabilityUsage({ connected = false }: { connected?: boolean 
   ]
   return <PageShell connected={connected} active="usage" title="Token 与成本" description="按服务商、模型和业务目标分析真实用量；成本仅按价格规则估算，未知值绝不按零补齐。" actions={<Space><Button loading={loading} icon={<ReloadOutlined />} onClick={() => void reload()}>刷新</Button><Button icon={<DownloadOutlined />} onClick={() => downloadCsv(connected ? '知枢-Token用量.csv' : '知枢-Token用量-原型.csv', [['Run ID', '输入', '输出', '总计', '用量来源', '估算成本'], ...runs.map((run) => [run.id, run.usage.input ?? '未知', run.usage.output ?? '未知', run.usage.total ?? '未知', run.usage.source, run.estimatedCost ?? '未知'])])}>导出明细</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openRule('new')}>新增价格规则</Button></Space>}>
     {error && <Alert className="space-bottom" type="error" showIcon title="用量数据读取失败" description={error} />}
-    <div className="obs-metrics-grid"><MetricCard label="已知总 Tokens" value={number(total)} note="未返回用量不计入" icon={<NodeIndexOutlined />} tone="violet" /><MetricCard label="模型请求 Run" value={number(runs.length)} note={connected ? '仅真实在线问答' : '构建与问答合并视图'} icon={<ApiOutlined />} /><MetricCard label="CNY 估算成本" value={money(connected ? null : runs.reduce((sum, run) => sum + (run.estimatedCost || 0), 0))} note={connected ? '价格规则后端尚未接入' : '不与 USD 直接相加'} icon={<DollarOutlined />} tone="orange" /><MetricCard label="完整成本覆盖" value={`${coverage}%`} note={`${runs.filter((run) => run.estimatedCost === null).length} 次成本未知`} icon={<LineChartOutlined />} tone="green" /></div>
-    <Alert className="obs-usage-alert" type="warning" showIcon title="估算成本 ≠ 服务商账单" description={connected ? 'Token 来自真实问答记录。价格规则仍是页面原型，不会写入服务端或改变真实 Run 的未知成本。' : '缺少 Token、价格或计量方式不支持时显示“未知”。历史价格按生效时间匹配，不同币种分开统计。'} />
+    <div className="obs-metrics-grid"><MetricCard label="已知总 Tokens" value={number(total)} note="未返回用量不计入" icon={<NodeIndexOutlined />} tone="violet" /><MetricCard label="模型请求 Run" value={number(runs.length)} note="构建与问答合并视图" icon={<ApiOutlined />} /><MetricCard label="CNY 估算成本" value={money(connected ? null : runs.reduce((sum, run) => sum + (run.estimatedCost || 0), 0))} note={connected ? '价格规则后端尚未接入' : '不与 USD 直接相加'} icon={<DollarOutlined />} tone="orange" /><MetricCard label="完整成本覆盖" value={`${coverage}%`} note={`${runs.filter((run) => run.estimatedCost === null).length} 次成本未知`} icon={<LineChartOutlined />} tone="green" /></div>
+    <Alert className="obs-usage-alert" type="warning" showIcon title="估算成本 ≠ 服务商账单" description={connected ? 'Token 来自真实构建与问答记录。价格规则仍是页面原型，不会写入服务端或改变真实 Run 的未知成本。' : '缺少 Token、价格或计量方式不支持时显示“未知”。历史价格按生效时间匹配，不同币种分开统计。'} />
     <Card loading={loading} title="用量分析" extra={<Select aria-label="用量分组" value={groupBy} onChange={setGroupBy} options={[{ value: 'provider', label: '按服务商' }, { value: 'model', label: '按模型' }, { value: 'application', label: '按应用／知识库' }, { value: 'knowledge', label: '按索引／知识目标' }]} />}><div className="obs-usage-bars"><div className="obs-usage-bars-head"><span>分组</span><span>Tokens 与占比</span><span>估算成本</span></div>{groups.map((group) => <div className="obs-usage-bar-row" key={group.key}><div><b>{group.key}</b><small>{group.requests} 次 Run · {number(group.total)} Tokens{group.unknown ? ` · ${group.unknown} 项不完整` : ''}</small></div><div className="obs-usage-track"><i style={{ width: `${Math.max(2, group.total / maxTotal * 100)}%` }} /><span>{number(group.total)}</span></div><strong>{money(group.cost)}</strong></div>)}{!groups.length && <Empty description="暂无用量记录" />}</div></Card>
     <Card title="价格规则" className="space-top" extra={<Tag>{connected ? '页面原型 · 未保存服务端' : '原型会话内生效'}</Tag>}><Table rowKey="id" columns={priceColumns} dataSource={priceRules} pagination={false} scroll={{ x: 900 }} /><p className="obs-table-footnote">单价均为演示配置。生产实现需使用十进制计算，并保存价格来源和生效起止时间。</p></Card>
     <Card title="调用用量明细" className="space-top obs-table-card"><Table loading={loading} rowKey="id" columns={columns} dataSource={runs} pagination={false} scroll={{ x: 1110 }} /></Card>
