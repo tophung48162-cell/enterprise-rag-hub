@@ -64,6 +64,7 @@ describe('menu permissions', () => {
       '/applications',
       '/chat',
       '/logs',
+      '/observability',
     ])
   })
 
@@ -74,6 +75,7 @@ describe('menu permissions', () => {
       '/applications',
       '/chat',
       '/logs',
+      '/observability',
     ])
   })
 
@@ -90,6 +92,7 @@ describe('route permissions', () => {
   it('allows authorized nested routes, query strings, hashes, and trailing slashes', () => {
     expect(canAccessPath('manager', '/knowledge/company-policy')).toBe(true)
     expect(canAccessPath('manager', '/logs/?status=failed#detail')).toBe(true)
+    expect(canAccessPath('manager', '/observability/runs/run-chat-031?tab=context')).toBe(true)
     expect(canAccessPath('user', '/chat/session-1?source=home')).toBe(true)
   })
 
@@ -97,6 +100,7 @@ describe('route permissions', () => {
     expect(canAccessPath('manager', '/models')).toBe(false)
     expect(canAccessPath('user', '/knowledge')).toBe(false)
     expect(canAccessPath('user', '/logs')).toBe(false)
+    expect(canAccessPath('user', '/observability/runs/run-chat-031')).toBe(false)
     expect(canAccessPath('admin', '/settings')).toBe(false)
     expect(canAccessPath('user', '/chatty')).toBe(false)
   })

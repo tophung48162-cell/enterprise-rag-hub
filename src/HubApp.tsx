@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { Dispatch, ReactNode, SetStateAction } from 'react'
 import { Alert, App as AntApp, Avatar, Badge, Breadcrumb, Button, Card, Checkbox, Descriptions, Divider, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Progress, Radio, Result, Select, Space, Spin, Statistic, Steps, Switch, Table, Tabs, Tag, Tooltip, Upload } from 'antd'
 import type { TableColumnsType } from 'antd'
-import { ApiOutlined, AppstoreOutlined, ArrowLeftOutlined, ArrowRightOutlined, AuditOutlined, BookOutlined, CheckCircleOutlined, CloudUploadOutlined, CopyOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, EyeOutlined, FileExcelOutlined, FileImageOutlined, FilePdfOutlined, FileTextOutlined, FolderOpenOutlined, HistoryOutlined, InboxOutlined, InfoCircleOutlined, LinkOutlined, MessageOutlined, NodeIndexOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SaveOutlined, ScissorOutlined, SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
+import { ApiOutlined, AppstoreOutlined, ArrowLeftOutlined, ArrowRightOutlined, AuditOutlined, BookOutlined, CheckCircleOutlined, CloudUploadOutlined, CopyOutlined, DatabaseOutlined, DeleteOutlined, EditOutlined, EyeOutlined, FileExcelOutlined, FileImageOutlined, FilePdfOutlined, FileTextOutlined, FolderOpenOutlined, HistoryOutlined, InboxOutlined, InfoCircleOutlined, LineChartOutlined, LinkOutlined, MessageOutlined, NodeIndexOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SaveOutlined, ScissorOutlined, SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, ThunderboltOutlined, UserOutlined } from '@ant-design/icons'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import type { Role } from './types'
 import { canAccessPath, getAccessibleMenuItems, getDefaultRoute, normalizeRole, ROLE_LABELS, ROLE_OPTIONS } from './permissions'
@@ -11,6 +11,7 @@ import type { BuildState, HubAssistant, HubChunk, HubDocument, HubKnowledge, Hub
 import { apiErrorMessage, hubApi, recognizeOcr } from './api'
 import type { ChunkDto, DocumentDto, IndexVersionDto, ModelDto, ProviderDto, RetrievalResponseDto } from './api'
 import { RemoteApplications, RemoteOnlineChat, RemoteRunLogs } from './RemoteChat'
+import { ObservabilityErrors, ObservabilityOverview, ObservabilityRunDetail, ObservabilityRuns, ObservabilityUsage } from './Observability'
 
 type ContextValue = {
   state: HubState
@@ -24,7 +25,7 @@ type ContextValue = {
 }
 const HubContext = createContext<ContextValue>(null!)
 const useHub = () => useContext(HubContext)
-const navIcons: Record<string, ReactNode> = { workbench: <AppstoreOutlined />, models: <ApiOutlined />, knowledge: <DatabaseOutlined />, applications: <RobotOutlined />, chat: <MessageOutlined />, logs: <AuditOutlined /> }
+const navIcons: Record<string, ReactNode> = { workbench: <AppstoreOutlined />, models: <ApiOutlined />, knowledge: <DatabaseOutlined />, applications: <RobotOutlined />, chat: <MessageOutlined />, logs: <AuditOutlined />, observability: <LineChartOutlined /> }
 const number = (value: number) => value.toLocaleString('zh-CN')
 const formatBytes = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(0.1, bytes / 1024).toFixed(1)} KB`
 const roleKey = 'knowledge-hub-role-v3'
@@ -169,6 +170,11 @@ export default function HubApp() {
         <Route path="/applications" element={<Applications />} />
         <Route path="/chat" element={<OnlineChat />} />
         <Route path="/logs" element={<Guard><RunLogs /></Guard>} />
+        <Route path="/observability" element={<Guard><ObservabilityOverview /></Guard>} />
+        <Route path="/observability/runs" element={<Guard><ObservabilityRuns /></Guard>} />
+        <Route path="/observability/runs/:runId" element={<Guard><ObservabilityRunDetail /></Guard>} />
+        <Route path="/observability/errors" element={<Guard><ObservabilityErrors /></Guard>} />
+        <Route path="/observability/usage" element={<Guard><ObservabilityUsage /></Guard>} />
         <Route path="*" element={<Result status="404" title="页面不存在" extra={<Button onClick={() => navigate('/workbench')}>返回工作台</Button>} />} />
       </Routes></main>
     </div>

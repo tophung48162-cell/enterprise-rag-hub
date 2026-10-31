@@ -1,16 +1,16 @@
 # 知枢 · 企业知识中台后端设计（1.0）
 
-- 状态：推荐技术组合已确认；通用知识问答主链路已实现，完整文档解析和可观测模块待后续推进
-- 日期：2026-10-29
+- 状态：推荐技术组合已确认；通用知识问答主链路和可观测前端原型已实现，完整文档解析与可观测后端待后续推进
+- 日期：2026-10-29；原型更新：2026-10-31
 - 范围：企业内部通用版，不含登录、SSO、多租户、正式计费、Agent 和工作流编排
 
-## 当前实现状态（2026-10-29）
+## 当前实现状态（2026-10-31）
 
 已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原件存储、同步与 Celery 异步任务、持久化状态和失败重试。知识库支持 Markdown 校验与上传、LangChain 结构化分块、幂等重切、人工编辑及删除清理；索引链路支持 LangChain `OpenAIEmbeddings` 批量调用、版本化向量快照、源内容校验、进度与错误状态，以及全部成功后的活动版本原子切换。检索链路使用活动版本的 Embedding 模型生成查询向量，PostgreSQL 通过 pgvector 余弦距离召回候选快照，支持阈值、候选池、Top K 和 Rerank 独立评分。问答链路已支持应用发布约束、持久化会话、多知识库合并、多轮上下文、LangChain `ChatOpenAI` 流式生成、SSE、引用快照和 Token 日志。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
 
-后端现有 57 项自动化测试、前端 42 项单元／组件／API 契约测试和 22 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入真实应用、会话、流式回答、引用和日志，浏览器测试以 HTTP 替身验证请求、SSE 分包、版本激活、向量／重排评分、原文快照和 Token 展示。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding、Rerank 或 LLM 已可用。
+后端现有 57 项自动化测试、前端 47 项单元／组件／API 契约测试和 27 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入真实应用、会话、流式回答、引用和日志，浏览器测试以 HTTP 替身验证请求、SSE 分包、版本激活、向量／重排评分、原文快照和 Token 展示。可观测前端已覆盖总览、构建／对话 Trace、工具／Skill、上下文、异常和用量成本交互，但全部使用明确标记的脱敏样例，真实后端埋点与接口尚未实现。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding、Rerank 或 LLM 已可用。
 
-Word／PDF／Excel 服务端解析、HNSW 索引和完整可观测模块是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；向量检索与问答尚未进行 PostgreSQL／pgvector 或真实云账号验收。
+Word／PDF／Excel 服务端解析、HNSW 索引和完整可观测后端是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；向量检索与问答尚未进行 PostgreSQL／pgvector 或真实云账号验收。
 
 ## 1. 设计目标与边界
 

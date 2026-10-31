@@ -12,10 +12,10 @@ export const ROLE_OPTIONS = (
   Object.entries(ROLE_LABELS) as Array<[Role, string]>
 ).map(([value, label]) => ({ value, label }))
 
-export type AppMenuPath = '/workbench' | '/chat' | '/knowledge' | '/applications' | '/models' | '/logs'
+export type AppMenuPath = '/workbench' | '/chat' | '/knowledge' | '/applications' | '/models' | '/logs' | '/observability'
 
 export interface PermissionedMenuItem {
-  key: 'workbench' | 'chat' | 'knowledge' | 'applications' | 'models' | 'logs'
+  key: 'workbench' | 'chat' | 'knowledge' | 'applications' | 'models' | 'logs' | 'observability'
   label: string
   path: AppMenuPath
   roles: readonly Role[]
@@ -36,6 +36,12 @@ export const APP_MENU_ITEMS: readonly PermissionedMenuItem[] = [
     key: 'logs',
     label: '运行日志',
     path: '/logs',
+    roles: ['admin', 'manager'],
+  },
+  {
+    key: 'observability',
+    label: '可观测',
+    path: '/observability',
     roles: ['admin', 'manager'],
   },
 ]

@@ -2,7 +2,7 @@
 
 面向企业内部知识服务场景的通用知识中台，目标是覆盖“配置模型 → 构建知识库 → 导入与分块 → 检索测试 → 发布问答应用 → 在线对话 → 运行日志”的完整流程。
 
-> **当前边界**：React 已接入服务商／模型配置、图片异步 OCR、知识库管理、Markdown 原件上传、LangChain 持久化分块、版本化向量索引、向量检索与 Rerank、问答应用、LangChain SSE 多轮对话、不可变引用和 Token 日志；后端不可用时明确回退到本机演示。角色选择不是真实登录或服务端鉴权；Word／PDF／Excel 服务端解析仍未实现。云调用目前由测试替身验收，真实云账号、PostgreSQL／pgvector 和 Docker 基础设施尚未验收。
+> **当前边界**：React 已接入服务商／模型配置、图片异步 OCR、知识库管理、Markdown 原件上传、LangChain 持久化分块、版本化向量索引、向量检索与 Rerank、问答应用、LangChain SSE 多轮对话、不可变引用和 Token 日志；后端不可用时明确回退到本机演示。可观测模块已完成脱敏交互原型，但尚未接入真实 Trace、异常或成本接口。角色选择不是真实登录或服务端鉴权；Word／PDF／Excel 服务端解析仍未实现。云调用目前由测试替身验收，真实云账号、PostgreSQL／pgvector 和 Docker 基础设施尚未验收。
 
 ## 功能
 
@@ -15,6 +15,7 @@
 - **问答应用**：真实持久化应用配置，关联知识库，配置 LLM、提示词、Top K、候选池、相似度、Rerank、草稿与发布；发布时校验全部知识库和活动索引。
 - **在线对话**：LangChain `ChatOpenAI` 流式生成、SSE 分包解析、多轮上下文、历史会话、停止生成和复制回答；引用保存活动索引原文快照，不受后续分块编辑影响。
 - **运行日志**：持久化查询与回答、知识来源、模型、输入／输出／总 Tokens、首 Token／总耗时、状态和错误码；只使用服务商实际用量，未返回时明确显示“未提供”。
+- **可观测原型**：总览、构建／对话 Run、调用树与瀑布时间轴、模型／工具／Skill 输入输出、最终上下文、异常中心、Token 与成本分析。当前全部使用明确标记的脱敏样例，不代表真实监控数据。
 - **角色视图**：管理员、知识库管理人员、使用者，包含菜单、数据范围和直接路由检查。
 - **响应式布局**：桌面端三栏工作区及移动端导航和主要页面适配。
 
@@ -52,15 +53,19 @@ npm run dev
 /applications
 /chat
 /logs
+/observability
+/observability/runs/run-chat-031
+/observability/errors
+/observability/usage
 ```
 
 ## 测试与构建
 
 ```bash
-# 42 项单元／组件／API 契约测试
+# 47 项单元／组件／API 契约测试
 npm test
 
-# 22 项浏览器端到端测试，需要本机 Google Chrome
+# 27 项浏览器端到端测试，需要本机 Google Chrome
 npm run test:e2e
 
 # TypeScript 检查与生产构建
@@ -70,7 +75,7 @@ npm run build
 npm run preview
 ```
 
-端到端测试覆盖角色权限、文件导入、知识索引与检索、问答发布、多轮对话、历史会话、停止生成、引用与日志、模型引用保护、任务清理和移动端布局；另以 HTTP 替身验收服务商／模型、图片 OCR、联机 Markdown、索引激活、检索 Rerank，以及应用创建、SSE 分包回答、不可变引用和 Token 日志等 API 路径，不会把替身响应伪装成真实账号验收。测试由 Playwright 自动启动并关闭临时开发服务器。
+端到端测试覆盖角色权限、文件导入、知识索引与检索、问答发布、多轮对话、历史会话、停止生成、引用与日志、模型引用保护、任务清理和移动端布局；另以 HTTP 替身验收服务商／模型、图片 OCR、联机 Markdown、索引激活、检索 Rerank，以及应用创建、SSE 分包回答、不可变引用和 Token 日志等 API 路径。可观测原型测试覆盖总览下钻、Run 筛选、对话／构建 Trace、工具／Skill、上下文、异常定位、CSV 导出、价格规则和移动端无横向溢出，不会把样例或替身响应伪装成真实监控与真实账号验收。测试由 Playwright 自动启动并关闭临时开发服务器。
 
 ## 数据与状态
 
@@ -97,19 +102,22 @@ docker compose up --build
 
 完整部署将启动前端、API、独立 Worker、PostgreSQL／pgvector、MinIO 和 Redis。当前开发机没有 Docker，以上编排只做了静态校验；真实云模型也需要配置有效账号后另行联调。
 
-后续阶段包括 Word／PDF／Excel 服务端解析、HNSW 索引和可观测模块。可观测功能范围先见 [可观测模块设计（待确认）](docs/observability-design-v1.md)，确认后再进入原型与后端开发。
+后续阶段包括 Word／PDF／Excel 服务端解析、HNSW 索引和可观测后端。可观测方案已确认，前端交互原型已完成；数据模型、埋点、原文权限和真实成本核算见 [可观测模块设计](docs/observability-design-v1.md)，后续按阶段 A 开始接入。
 
 ## 主要源码
 
 ```text
-src/HubApp.tsx          当前六个模块及主要交互
-src/RemoteChat.tsx      真实应用、SSE 在线对话与 Token 日志
-src/api.ts             FastAPI 客户端、SSE 解析、错误处理与 OCR 轮询
-src/hub.css            页面样式与响应式规则
-src/workspace.ts       数据类型、种子数据、分块与检索模拟
-src/permissions.ts     角色、菜单与路径权限
-src/*.test.ts(x)       单元／组件／API 契约测试
-e2e/hub.spec.ts        浏览器端到端回归
+src/HubApp.tsx             当前七个模块及主要交互
+src/RemoteChat.tsx         真实应用、SSE 在线对话与 Token 日志
+src/Observability.tsx      可观测总览、Run、Trace、异常与用量成本原型
+src/observabilityData.ts   脱敏原型夹具、筛选与用量计算
+src/observability.css      可观测页面与响应式样式
+src/api.ts                FastAPI 客户端、SSE 解析、错误处理与 OCR 轮询
+src/hub.css               页面样式与响应式规则
+src/workspace.ts          数据类型、种子数据、分块与检索模拟
+src/permissions.ts        角色、菜单与路径权限
+src/*.test.ts(x)          单元／组件／API 契约测试
+e2e/hub.spec.ts           浏览器端到端回归
 ```
 
 `src/App.tsx`、`src/styles.css` 和 `src/mockData.ts` 为早期版本保留源码，不是当前运行入口。
