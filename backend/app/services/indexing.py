@@ -10,6 +10,7 @@ from app.errors import ApiError
 from app.providers.gateway import ModelGateway
 from app.security import decrypt_secret
 from app.services.configs import get_model, get_provider
+from app.services.knowledge_activities import attach_knowledge_activities
 from app.services.observability import TraceRecorder, create_build_trace_root
 
 EMBEDDING_BATCH_SIZE = 32
@@ -72,7 +73,8 @@ def prepare_index_version(db: Session, knowledge_base: KnowledgeBase) -> IndexVe
     )
     db.add(version)
     db.flush()
-    create_build_trace_root(db, version, knowledge_name=knowledge_base.name)
+    root = create_build_trace_root(db, version, knowledge_name=knowledge_base.name)
+    attach_knowledge_activities(db, version=version, root=root)
     if not knowledge_base.active_index_version_id:
         for document in knowledge_base.documents:
             document.status = "processing"

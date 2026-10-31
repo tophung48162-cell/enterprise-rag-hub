@@ -43,7 +43,7 @@ function SpanKindIcon({ span }: { span: ObservabilitySpan }) {
 }
 
 function DemoNotice({ connected }: { connected: boolean }) {
-  if (connected) return <div className="obs-demo-notice"><CheckCircleOutlined /><span><b>真实运行 Trace · 服务端数据</b>　已接入在线问答、知识库构建调用链、完整对话消息快照、模型用量与异常指纹聚合；价格规则后端仍待接入。</span><Tag color="success">异常聚合</Tag></div>
+  if (connected) return <div className="obs-demo-notice"><CheckCircleOutlined /><span><b>真实运行 Trace · 服务端数据</b>　已接入知识上传、持久化分块、索引构建、在线问答、完整对话消息快照、模型用量与异常指纹聚合；价格规则后端仍待接入。</span><Tag color="success">知识全链路</Tag></div>
   return <div className="obs-demo-notice"><InfoCircleOutlined /><span><b>交互原型 · 脱敏样例数据</b>　页面用于确认功能与布局，尚未连接真实观测接口；工具、Skill 与 Agent 节点仅在明确标记的测试夹具中出现。</span><Tag>非真实监控</Tag></div>
 }
 

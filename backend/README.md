@@ -25,6 +25,7 @@ FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连
 - Token 只记录服务商 `usage_metadata`，未提供时保持空值和 `usage_source=unavailable`，不按字符估算；同时记录首 Token 和总耗时。
 - 真实对话 Trace：根 Span、配置、逐库检索、Embedding、向量查询、可选 Rerank、上下文、LLM 和持久化节点；`meta` 返回 `trace_id`。
 - 真实索引构建 Trace：复用 `index_versions.id` 作为构建 Run ID，记录源校验、Embedding 阶段与批次、向量写入、索引校验和激活；失败闭合运行中节点，重试追加新的批次尝试。
+- `knowledge_activities` 在上传和分块操作发生时保存真实耗时、参数、数量、状态与脱敏错误；新构建 Trace 挂载每份当前文档最新的成功上传／分块节点，重复分块不会重复堆叠历史节点，历史文档没有活动记录时不补造。
 - `observability_spans / model_calls / error_events` 通过可空 `run_id`／`build_id` 分别关联问答与构建；异常时闭合未完成节点，提供合并总览、Run、Trace 详情、原始异常与指纹聚合接口，历史无 Span 的 Run 保持兼容。
 - 异常指纹聚合跨构建与问答统计发生次数、去重影响 Run、首次／最近发生时间和组内最高严重度；最新事件用于摘要、重试建议与 Trace 定位，原始事件接口保持不变。
 - `context_snapshots` 在 LLM 调用前保存实际消息数组、元数据和 SHA‑256 上下文哈希；详情接口按 BuildContext 返回完整快照，旧对话无快照时不做事后重建。
@@ -33,7 +34,7 @@ FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连
 
 ## 尚未实现
 
-Word／PDF／Excel 服务端解析、HNSW 索引、价格规则后端与正式账单仍属于后续阶段；OCR、文档解析和分块尚未纳入构建 Trace，动态 Token 预算、快照采样与保留清理也尚未实现。React 已接入本 README 中的真实接口，并保留明确标记的浏览器演示回退。当前联调测试使用 HTTP 替身，真实云服务、PostgreSQL／pgvector 和容器运行仍未验收。
+Word／PDF／Excel 服务端解析、HNSW 索引、价格规则后端与正式账单仍属于后续阶段；OCR 和其他格式文档解析尚未纳入构建 Trace，动态 Token 预算、快照采样与保留清理也尚未实现。上传／分块失败活动已持久化，但独立失败活动查询页面仍待补强。React 已接入本 README 中的真实接口，并保留明确标记的浏览器演示回退。当前联调测试使用 HTTP 替身，真实云服务、PostgreSQL／pgvector 和容器运行仍未验收。
 
 ## 本地开发
 
@@ -157,4 +158,4 @@ cd backend
 ../.venv/bin/pytest
 ```
 
-当前 64 项测试覆盖配置、密钥、LangChain 模型网关、同步／异步 OCR、知识库与模型引用保护、Markdown 持久化分块、版本化索引、活动版本切换、余弦召回、候选池重排、不可变快照、应用发布约束、会话持久化、SSE 引用与增量回答、多轮上下文、Token 有／无返回、失败脱敏、日志筛选和迁移；观测测试覆盖真实问答与构建 Trace 树、18／6／24 Token、构建维度失败闭合、重试第 2 次尝试、完整快照与网关实际输入一致、用量缺失警告、异常脱敏、跨问答／构建异常指纹聚合，以及历史无 Span Run 的兼容读取。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**，也不代表 PostgreSQL／pgvector、Docker 或 HNSW 已验收。
+当前 65 项测试覆盖配置、密钥、LangChain 模型网关、同步／异步 OCR、知识库与模型引用保护、Markdown 持久化分块、版本化索引、活动版本切换、余弦召回、候选池重排、不可变快照、应用发布约束、会话持久化、SSE 引用与增量回答、多轮上下文、Token 有／无返回、失败脱敏、日志筛选和迁移；观测测试覆盖真实问答与构建 Trace 树、上传／分块活动同链挂载、重复分块仅采用最新记录、18／6／24 Token、构建维度失败闭合、重试第 2 次尝试、完整快照与网关实际输入一致、用量缺失警告、异常脱敏、跨问答／构建异常指纹聚合，以及历史无 Span Run 的兼容读取。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**，也不代表 PostgreSQL／pgvector、Docker 或 HNSW 已验收。

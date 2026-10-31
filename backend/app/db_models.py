@@ -100,6 +100,24 @@ class Document(Base):
     chunks: Mapped[list[Chunk]] = relationship(back_populates="document", cascade="all, delete-orphan")
 
 
+class KnowledgeActivity(Base):
+    __tablename__ = "knowledge_activities"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    output_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    attributes_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
 class Chunk(Base):
     __tablename__ = "chunks"
     __table_args__ = (UniqueConstraint("document_id", "sequence"),)

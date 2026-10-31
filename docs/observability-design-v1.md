@@ -1,9 +1,9 @@
 # 知枢 · RAG 中台可观测模块设计（1.0）
 
-- 状态：**推荐方案已于 2026-10-31 确认；阶段 B 与异常指纹聚合已接入前后端**
-- 日期：2026-10-29；原型、阶段 A／B 与异常聚合更新：2026-10-31
+- 状态：**推荐方案已于 2026-10-31 确认；知识上传／分块／索引 Trace 与异常指纹聚合已接入前后端**
+- 日期：2026-10-29；原型、阶段 A／B、异常聚合与知识全链路更新：2026-10-31
 - 目标：让知识库构建、检索增强问答、模型与工具调用、异常和用量成本可以在同一条调用链中定位与复盘
-- 当前基础：已有知识库任务、索引版本、问答 `QueryRun`、消息、引用快照、服务商 Token 和耗时记录；阶段 A 新增 Span、ModelCall、ErrorEvent 及真实查询接口，阶段 B 增加构建关联和 `context_snapshots`，随后增加异常指纹聚合查询。React 联机展示真实构建／对话 Trace、完整消息快照、聚合异常和用量，断线时保留明确标记的脱敏原型。OCR／解析／分块 Trace、工具／Skill 调用和成本核算仍未接入
+- 当前基础：已有知识库任务、索引版本、问答 `QueryRun`、消息、引用快照、服务商 Token 和耗时记录；阶段 A 新增 Span、ModelCall、ErrorEvent 及真实查询接口，阶段 B 增加构建关联和 `context_snapshots`，随后增加异常指纹聚合查询与 `knowledge_activities` 真实上传／分块活动记录。React 联机展示真实知识处理、构建／对话 Trace、完整消息快照、聚合异常和用量，知识库版本可直接进入对应构建链路，断线时保留明确标记的脱敏原型。OCR／其他格式解析 Trace、工具／Skill 调用和成本核算仍未接入
 
 ## 阶段 A 已交付范围（2026-10-31）
 
@@ -30,6 +30,14 @@
 - 每组返回发生次数、按 `run_id/build_id` 去重的影响 Run 数、首次／最近发生时间和组内最高严重度；最新事件提供错误码、分类、安全摘要、重试建议和 Run／Span 定位。
 - 总览与异常中心使用聚合接口；列表支持指纹搜索、分类和严重度筛选，详情展示影响范围与时间范围，并定位最近一次 Trace。
 - 聚合不修改原始事件，不自动重试，不把不同指纹的影响 Run 数直接相加解释为全局去重 Run 数。
+
+## 知识上传／分块／索引全链路已交付范围（2026-10-31）
+
+- 迁移 `0007_knowledge_activities` 新增 `knowledge_activities`，在上传与 LangChain 分块操作发生时保存真实开始／结束时间、耗时、参数、数量、状态和脱敏错误；不保存文件全文、密钥或对象存储地址。
+- 创建索引版本时，把每份当前文档最新一条成功 Upload 和 Chunk 活动挂载到同一构建 Trace；重复分块只采用最新记录，历史文档无活动时不补造节点。
+- 索引继续记录 ValidateSource、Embedding 批次、VectorWrite、ValidateIndex 和 ActivateIndex。上传／分块节点标记 `recorded_before_index=true`，Run 总耗时仍表示索引执行耗时，不把用户两次操作之间的等待时间算入处理耗时。
+- 知识库“文件与任务”的每个真实索引版本提供“构建链路”入口，直接打开对应 `/observability/runs/{index_version_id}`。
+- 当前仅成功活动进入后续构建 Trace；失败活动已经持久化，但独立失败活动查询页面仍待补强。OCR 和 Word／PDF／Excel 解析 Trace 尚未接入。
 
 ## 1. 建设目标与边界
 
@@ -300,6 +308,7 @@ API、Celery Worker 和子任务通过任务载荷传播 `trace_id / run_id / pa
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `observability_runs` | `id`、`trace_id`、`kind`、`status`、`kb_id`、`document_id`、`index_version_id`、`assistant_id`、`conversation_id`、`started_at`、`ended_at`、`duration_ms`、`attempt`、`metadata_json` | 未来可选统一运行索引；当前复用 `query_runs.id` 和 `index_versions.id`，不新建业务状态机 |
+| `knowledge_activities` | `id`、`kb_id`、`document_id`、`stage`、`name`、`status`、`input_text`、`output_text`、`attributes_json`、`error_code`、`started_at`、`ended_at`、`duration_ms` | 当前持久化真实上传／分块活动；构建 Trace 引用每份当前文档最新成功记录 |
 | `observability_spans` | `id`、`trace_id`、`run_id`、`build_id`、`parent_span_id`、`kind`、`name`、`status`、`started_at`、`ended_at`、`duration_ms`、`sequence`、`attributes_json`、`error_code` | 当前以可空 `run_id`／`build_id` 分别关联问答和构建；工具、Skill、Agent 仍只在实际发生后接入 |
 | `model_calls` | `id`、`span_id`、`run_id`、`build_id`、`provider_id`、`model_config_id`、`remote_model_id`、`capability`、`provider_request_id`、`attempt`、`status`、`input_object_key`、`output_object_key`、`first_token_ms`、`duration_ms`、`error_code` | 一次真实 provider 请求一条，重试不覆盖 |
 | `tool_calls` | `id`、`span_id`、`name`、`version`、`input_json`、`output_object_key`、`status`、`attempt`、`duration_ms`、`error_code` | 未来真实工具调用及结构化参数 |
@@ -403,9 +412,9 @@ GET|POST|PATCH /api/v1/observability/price-rules
 
 ### 阶段 B：构建 Trace、异常中心与上下文
 
-- 已交付：源校验、Embedding 批次、向量写入、索引校验和激活的真实 Trace；异常闭合与重试尝试；最终模型消息和上下文哈希；构建／问答合并查询与前端详情。
-- 已验收：维度故障能定位到具体批次，重试产生第 2 次尝试；快照消息与网关实际输入一致；历史无 Trace／快照保持兼容。
-- 尚未交付：OCR、解析和分块 Trace，动态预算证据，Harness 心跳／离线扫描，快照采样与保留清理。进程崩溃后的超时闭合不能仅凭当前单元测试视为完成。
+- 已交付：真实上传／分块活动及其与源校验、Embedding 批次、向量写入、索引校验和激活的同链 Trace；异常闭合与重试尝试；最终模型消息和上下文哈希；构建／问答合并查询、知识库版本直达链路与前端详情。
+- 已验收：维度故障能定位到具体批次，重试产生第 2 次尝试；重复分块只采用最新活动；快照消息与网关实际输入一致；历史无 Trace／快照／活动保持兼容。
+- 尚未交付：OCR 和其他格式解析 Trace、上传／分块失败活动独立查询页面、动态预算证据、Harness 心跳／离线扫描、快照采样与保留清理。进程崩溃后的超时闭合不能仅凭当前单元测试视为完成。
 
 ### 阶段 C：工具／Skill／Agent 与成本分析
 

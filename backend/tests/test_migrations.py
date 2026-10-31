@@ -28,6 +28,7 @@ def test_initial_migration_upgrades_clean_database_and_matches_models(tmp_path):
         "ocr_results",
         "knowledge_bases",
         "documents",
+        "knowledge_activities",
         "chunks",
         "index_versions",
         "chunk_embeddings",

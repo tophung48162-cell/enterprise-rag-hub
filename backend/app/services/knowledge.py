@@ -1,4 +1,6 @@
 import hashlib
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -12,6 +14,7 @@ from app.db_models import Chunk, Document, KnowledgeBase
 from app.errors import ApiError
 from app.services.configs import get_model
 from app.services.indexing import ensure_no_running_index
+from app.services.knowledge_activities import record_knowledge_activity
 from app.storage import ObjectStorage
 
 MARKDOWN_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
@@ -105,7 +108,7 @@ def split_markdown(text: str, chunk_size: int, chunk_overlap: int, strategy: str
     return results
 
 
-def upload_markdown(
+def _upload_markdown(
     db: Session,
     storage: ObjectStorage,
     *,
@@ -149,7 +152,67 @@ def upload_markdown(
     return document
 
 
-def preview_markdown(
+def upload_markdown(
+    db: Session,
+    storage: ObjectStorage,
+    *,
+    knowledge_base: KnowledgeBase,
+    data: bytes,
+    file_name: str,
+    mime: str,
+) -> Document:
+    started_at = datetime.now(UTC)
+    started = time.perf_counter()
+    display_name = Path(file_name.replace("\\", "/")).name.replace("\x00", "").strip()[:255] or "未命名文件"
+    try:
+        document = _upload_markdown(
+            db,
+            storage,
+            knowledge_base=knowledge_base,
+            data=data,
+            file_name=file_name,
+            mime=mime,
+        )
+    except Exception as exc:
+        db.rollback()
+        record_knowledge_activity(
+            db,
+            knowledge_base_id=knowledge_base.id,
+            document_id=None,
+            stage="upload",
+            name=f"Upload · {display_name}",
+            status="failed",
+            started_at=started_at,
+            ended_at=datetime.now(UTC),
+            duration_ms=round((time.perf_counter() - started) * 1000),
+            input_text=f"{display_name} · {len(data)} 字节",
+            output_text=exc.message if isinstance(exc, ApiError) else "文档上传失败",
+            error_code=exc.code if isinstance(exc, ApiError) else "DOCUMENT_UPLOAD_FAILED",
+        )
+        raise
+    record_knowledge_activity(
+        db,
+        knowledge_base_id=knowledge_base.id,
+        document_id=document.id,
+        stage="upload",
+        name=f"Upload · {document.original_name}",
+        status="succeeded",
+        started_at=started_at,
+        ended_at=datetime.now(UTC),
+        duration_ms=round((time.perf_counter() - started) * 1000),
+        input_text=f"{document.original_name} · {document.size_bytes} 字节 · {document.mime}",
+        output_text="UTF-8 与重复内容校验通过，原件已写入私有对象存储",
+        attributes={
+            "size_bytes": document.size_bytes,
+            "sha256": document.sha256,
+            "mime": document.mime,
+            "parser_version": document.parser_version,
+        },
+    )
+    return document
+
+
+def _preview_markdown(
     db: Session,
     storage: ObjectStorage,
     *,
@@ -185,6 +248,66 @@ def preview_markdown(
     document.knowledge_base.chunk_strategy = chunk_strategy
     db.commit()
     return document.chunks
+
+
+def preview_markdown(
+    db: Session,
+    storage: ObjectStorage,
+    *,
+    document: Document,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunk_strategy: str,
+) -> list[Chunk]:
+    started_at = datetime.now(UTC)
+    started = time.perf_counter()
+    try:
+        chunks = _preview_markdown(
+            db,
+            storage,
+            document=document,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            chunk_strategy=chunk_strategy,
+        )
+    except Exception as exc:
+        db.rollback()
+        record_knowledge_activity(
+            db,
+            knowledge_base_id=document.kb_id,
+            document_id=document.id,
+            stage="chunk",
+            name=f"Chunk · {document.original_name}",
+            status="failed",
+            started_at=started_at,
+            ended_at=datetime.now(UTC),
+            duration_ms=round((time.perf_counter() - started) * 1000),
+            input_text=f"chunk_size={chunk_size} · chunk_overlap={chunk_overlap} · strategy={chunk_strategy}",
+            output_text=exc.message if isinstance(exc, ApiError) else "文档分块失败",
+            error_code=exc.code if isinstance(exc, ApiError) else "DOCUMENT_CHUNK_FAILED",
+        )
+        raise
+    record_knowledge_activity(
+        db,
+        knowledge_base_id=document.kb_id,
+        document_id=document.id,
+        stage="chunk",
+        name=f"Chunk · {document.original_name}",
+        status="succeeded",
+        started_at=started_at,
+        ended_at=datetime.now(UTC),
+        duration_ms=round((time.perf_counter() - started) * 1000),
+        input_text=f"chunk_size={chunk_size} · chunk_overlap={chunk_overlap} · strategy={chunk_strategy}",
+        output_text=f"LangChain 生成并持久化 {len(chunks)} 个分块，状态为待索引",
+        attributes={
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "chunk_strategy": chunk_strategy,
+            "chunk_count": len(chunks),
+            "character_count": sum(len(chunk.text) for chunk in chunks),
+        },
+    )
+    return chunks
 
 
 def delete_document(db: Session, storage: ObjectStorage, document: Document) -> None:

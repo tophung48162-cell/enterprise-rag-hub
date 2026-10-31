@@ -467,6 +467,26 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
   })
   let currentVersion: ReturnType<typeof indexVersion> | null = null
   let failedVersion: ReturnType<typeof indexVersion> | null = null
+  const traceSpan = (id: string, name: string, parentId: string | null = 'trace-e2e') => ({
+    id, run_id: 'index-e2e', parent_id: parentId, kind: 'stage', name, status: 'succeeded', offset_ms: 0, duration_ms: 20,
+    summary: '真实知识处理活动', input: `${name} 输入摘要`, output: `${name} 输出摘要`, provider: null, model: null,
+    usage: null, estimated_cost: null, attempt: 1, error_code: null, metadata: { recorded_before_index: true }, context_snapshot: null,
+  })
+  const buildTrace = () => ({
+    run: {
+      id: 'index-e2e', trace_id: 'trace-e2e', kind: 'build', name: `索引构建 · ${knowledge.name}`, target: knowledge.name,
+      secondary_target: '2/2 个分块', status: 'succeeded', started_at: knowledge.created_at, duration_ms: 320, progress: 100,
+      provider: '通义测试', model: 'text-embedding-v4', usage: { input: null, output: null, total: null, source: 'unavailable' },
+      estimated_cost: null, cost_coverage: 0, error_code: null, query: '', answer: '',
+    },
+    spans: [
+      traceSpan('trace-e2e', 'KnowledgeBuild Run', null),
+      traceSpan('span-upload', 'Upload · 联机研发规范.md'),
+      traceSpan('span-chunk', 'Chunk · 联机研发规范.md'),
+      { ...traceSpan('span-embedding', 'Embedding · batch 1'), kind: 'model', provider: '通义测试', model: 'text-embedding-v4', usage: { input: null, output: null, total: null, source: 'unavailable' } },
+      traceSpan('span-activate', 'ActivateIndex'),
+    ],
+  })
   await page.route('**/api/v1/models', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(models) }))
   await page.route('**/api/v1/knowledge-bases', async (route) => {
     if (route.request().method() === 'GET') {
@@ -530,6 +550,9 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
     const versions = [failedVersion, currentVersion].filter(Boolean)
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(versions) })
   })
+  await page.route('**/api/v1/observability/runs/index-e2e', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(buildTrace()),
+  }))
   await page.route('**/api/v1/knowledge-bases/kb-e2e/retrieval', async (route) => {
     expect(route.request().postDataJSON()).toMatchObject({ query: '报销需要哪些材料？', top_k: 5, candidate_k: 20, rerank: true })
     await route.fulfill({
@@ -575,6 +598,14 @@ test('联机 Markdown 创建、上传、持久化分块与人工编辑形成真�
   await expect(page.locator('.task-list')).toContainText('Token 用量未提供')
   await expect(page.locator('.workspace-summary')).toContainText('1 份已索引')
   await expect(page.locator('.table-card tbody')).toContainText('已索引')
+  await page.getByRole('button', { name: /查看构建链路/ }).click()
+  await expect(page).toHaveURL(/\/observability\/runs\/index-e2e/)
+  await expect(page.locator('.obs-trace-tree')).toContainText('Upload · 联机研发规范.md')
+  await expect(page.locator('.obs-trace-tree')).toContainText('Chunk · 联机研发规范.md')
+  await expect(page.locator('.obs-trace-tree')).toContainText('Embedding · batch 1')
+  await expect(page.locator('.obs-trace-tree')).toContainText('ActivateIndex')
+  await page.goto('/knowledge/kb-e2e')
+  await expect(page.locator('.task-list')).toContainText('当前版本')
 
   queueFailure = true
   await page.locator('.knowledge-content .page-heading').getByRole('button', { name: /构建索引/ }).click()

@@ -191,6 +191,8 @@ async def test_successful_index_build_exposes_real_trace(client, knowledge_base,
     spans = detail["spans"]
     assert {
         "KnowledgeBuild Run",
+        "Upload · 员工指南.md",
+        "Chunk · 员工指南.md",
         "ValidateSource",
         "Embedding Stage",
         "Embedding · batch 1",
@@ -198,6 +200,14 @@ async def test_successful_index_build_exposes_real_trace(client, knowledge_base,
         "ValidateIndex",
         "ActivateIndex",
     }.issubset({span["name"] for span in spans})
+    upload = next(span for span in spans if span["name"] == "Upload · 员工指南.md")
+    chunk = next(span for span in spans if span["name"] == "Chunk · 员工指南.md")
+    assert upload["metadata"]["recorded_before_index"] is True
+    assert upload["metadata"]["document_name"] == "员工指南.md"
+    assert upload["metadata"]["size_bytes"] > 0
+    assert chunk["metadata"]["chunk_count"] == len(chunks)
+    assert chunk["metadata"]["chunk_strategy"] == "structure"
+    assert "原文" not in upload["input"]
     assert all(span["run_id"] == run["id"] for span in spans)
     root = next(span for span in spans if span["parent_id"] is None)
     assert root["id"] == run["trace_id"]
@@ -219,6 +229,25 @@ async def test_successful_index_build_exposes_real_trace(client, knowledge_base,
     assert summary["success_rate"] == 100
     assert summary["unknown_usage_count"] == 1
     assert summary["status_counts"] == {"succeeded": 1}
+
+
+def test_build_trace_uses_latest_chunk_activity_without_duplicates(client, knowledge_base):  # noqa: F811
+    document, _ = prepare_chunks(client, knowledge_base)
+    repeated = client.post(
+        f"/api/v1/documents/{document['id']}/preview",
+        json={"chunk_size": 120, "chunk_overlap": 20, "chunk_strategy": "recursive"},
+    )
+    assert repeated.status_code == 200
+    queued = create_version(client, knowledge_base)
+
+    detail = client.get(f"/api/v1/observability/runs/{queued['id']}").json()
+    uploads = [span for span in detail["spans"] if span["name"] == "Upload · 员工指南.md"]
+    chunks = [span for span in detail["spans"] if span["name"] == "Chunk · 员工指南.md"]
+    assert len(uploads) == 1
+    assert len(chunks) == 1
+    assert chunks[0]["metadata"]["chunk_size"] == 120
+    assert chunks[0]["metadata"]["chunk_strategy"] == "recursive"
+    assert chunks[0]["metadata"]["knowledge_activity_id"] != uploads[0]["metadata"]["knowledge_activity_id"]
 
 
 @pytest.mark.asyncio
