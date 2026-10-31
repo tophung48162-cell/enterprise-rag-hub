@@ -309,6 +309,94 @@ class QueryRunOut(BaseModel):
     created_at: datetime
 
 
+class ObservabilityUsageOut(BaseModel):
+    input: int | None
+    output: int | None
+    total: int | None
+    source: Literal["provider", "unavailable"]
+
+
+class ObservabilityRunOut(BaseModel):
+    id: str
+    trace_id: str
+    kind: Literal["chat"] = "chat"
+    name: str
+    target: str
+    secondary_target: str
+    status: str
+    started_at: datetime
+    duration_ms: int
+    progress: int
+    provider: str
+    model: str
+    usage: ObservabilityUsageOut
+    estimated_cost: float | None = None
+    cost_coverage: int = 0
+    error_code: str | None
+    query: str
+    answer: str
+
+
+class ObservabilitySpanOut(BaseModel):
+    id: str
+    run_id: str
+    parent_id: str | None
+    kind: str
+    name: str
+    status: str
+    offset_ms: int
+    duration_ms: int
+    summary: str
+    input: str
+    output: str
+    provider: str | None
+    model: str | None
+    usage: ObservabilityUsageOut | None
+    estimated_cost: float | None = None
+    attempt: int
+    error_code: str | None
+    metadata: dict
+
+
+class ObservabilityRunDetailOut(BaseModel):
+    run: ObservabilityRunOut
+    spans: list[ObservabilitySpanOut]
+
+
+class ObservabilityErrorOut(BaseModel):
+    id: str
+    run_id: str
+    span_id: str | None
+    category: str
+    severity: str
+    code: str
+    message: str
+    fingerprint: str
+    count: int
+    first_occurred_at: datetime
+    last_occurred_at: datetime
+    retryable: bool
+
+
+class ObservabilityTrendOut(BaseModel):
+    day: str
+    runs: int
+    failed: int
+    tokens: int
+
+
+class ObservabilitySummaryOut(BaseModel):
+    run_count: int
+    success_rate: float
+    total_tokens: int
+    unknown_usage_count: int
+    estimated_cost: float | None = None
+    cost_coverage: int = 0
+    status_counts: dict[str, int]
+    trend: list[ObservabilityTrendOut]
+    slow_spans: list[ObservabilitySpanOut]
+
+
 class DocumentPreviewRequest(BaseModel):
     chunk_size: int = Field(ge=100, le=4000)
     chunk_overlap: int = Field(ge=0, le=3999)

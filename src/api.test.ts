@@ -152,6 +152,28 @@ describe('FastAPI client contracts', () => {
     expect(handlers.onDone).not.toHaveBeenCalled()
   })
 
+  it('uses observability filters and preserves real trace and unknown-usage contracts', async () => {
+    const run = { id: 'run-obs', trace_id: 'trace-obs', kind: 'chat', usage: { input: null, output: null, total: null, source: 'unavailable' } }
+    const detail = { run, spans: [{ id: 'span-obs', run_id: 'run-obs', parent_id: null, usage: null, metadata: { full_snapshot_captured: false } }] }
+    const summary = { run_count: 1, success_rate: 100, total_tokens: 0, unknown_usage_count: 1, status_counts: { succeeded: 1 }, trend: [], slow_spans: [] }
+    const errors = [{ id: 'error-obs', run_id: 'run-obs', span_id: 'span-obs', code: 'USAGE_UNAVAILABLE', count: 1 }]
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse([run]))
+      .mockResolvedValueOnce(jsonResponse(detail))
+      .mockResolvedValueOnce(jsonResponse(summary))
+      .mockResolvedValueOnce(jsonResponse(errors))
+    await expect(hubApi.listObservabilityRuns({ search: '报销', status: 'succeeded', kind: 'chat' })).resolves.toEqual([run])
+    await expect(hubApi.getObservabilityRun('run-obs')).resolves.toEqual(detail)
+    await expect(hubApi.getObservabilitySummary()).resolves.toEqual(summary)
+    await expect(hubApi.listObservabilityErrors()).resolves.toEqual(errors)
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/observability/runs?search=%E6%8A%A5%E9%94%80&status=succeeded&kind=chat',
+      '/api/v1/observability/runs/run-obs',
+      '/api/v1/observability/summary',
+      '/api/v1/observability/errors',
+    ])
+  })
+
   it('polls OCR from queued to ready and returns recognized text', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(ocrResult('queued'), 202)).mockResolvedValueOnce(jsonResponse(ocrResult('ready')))
     const file = new File(['image'], '流程图.png', { type: 'image/png' })

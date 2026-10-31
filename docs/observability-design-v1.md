@@ -1,9 +1,21 @@
 # 知枢 · RAG 中台可观测模块设计（1.0）
 
-- 状态：**推荐方案已于 2026-10-31 确认；前端交互原型已完成，后端观测接口尚未开发**
-- 日期：2026-10-29；原型更新：2026-10-31
+- 状态：**推荐方案已于 2026-10-31 确认；阶段 A 真实对话 Trace 已接入前后端**
+- 日期：2026-10-29；原型与阶段 A 更新：2026-10-31
 - 目标：让知识库构建、检索增强问答、模型与工具调用、异常和用量成本可以在同一条调用链中定位与复盘
-- 当前基础：已有知识库任务、索引版本、问答 `QueryRun`、消息、引用快照、服务商 Token 和耗时记录；React 已补齐总览、Run、Trace、上下文、异常与用量成本页面，使用明确标记的脱敏样例。真实 Trace／Span、工具／Skill 调用、上下文快照和成本核算仍未接入
+- 当前基础：已有知识库任务、索引版本、问答 `QueryRun`、消息、引用快照、服务商 Token 和耗时记录；阶段 A 新增 Span、ModelCall、ErrorEvent 及真实查询接口。React 联机展示真实对话 Trace、异常和用量，断线时保留明确标记的脱敏原型。构建 Trace、完整上下文快照、工具／Skill 调用、异常指纹聚合和成本核算仍未接入
+
+## 阶段 A 已交付范围（2026-10-31）
+
+- 复用 `query_runs.id` 作为问答 Run ID，以根 Span ID 作为 `trace_id`；SSE `meta` 同步返回 `run_id` 与 `trace_id`。
+- 新表 `observability_spans`、`model_calls`、`error_events`，迁移版本 `0005_observability`；历史 QueryRun 无 Span 时详情返回空数组，不伪造节点。
+- 记录 LoadConfig、逐库 Retrieval、QueryEmbedding、VectorSearch、可选 Rerank、MergeAndRank、BuildContext、LLM、PersistResult，以及成功、失败和停止状态。异常时闭合仍为 running 的 Span／ModelCall。
+- 模型调用记录服务商、模型、能力、耗时、首 Token、输入／输出／总 Token 和 `provider/unavailable` 用量来源；服务商未返回用量时运行仍可成功，同时生成 `USAGE_UNAVAILABLE` 警告。
+- 提供 `GET /api/v1/observability/summary`、`/runs`、`/runs/{run_id}`、`/errors`。总览含真实状态、7 日趋势与慢模型调用；异常本阶段逐条返回，`count=1`，尚未按指纹聚合。
+- 仅保存有界摘要和结构化元数据，不保存密钥、完整 Prompt 或 Base64。`estimated_cost=null`、`cost_coverage=0`，不做价格或账单推算。
+- 联机前端展示真实总览、Run、Trace、异常和 Token；BuildContext 只展示实际元数据，并明确提示“完整消息快照将在阶段 B 接入”。价格规则仍仅为页面原型，不写服务端。
+
+阶段 A 自动化验收覆盖成功、失败脱敏、用量缺失、历史 Run 兼容和真实前端联动；停止路径已实现，但未把单元级闭合测试描述为完整浏览器断流验收。真实云账号、PostgreSQL／pgvector 与 Docker 环境仍需另行联调。
 
 ## 1. 建设目标与边界
 
@@ -416,4 +428,4 @@ GET|POST|PATCH /api/v1/observability/price-rules
 5. **权限前提**：真实登录上线前，观测模块只用于受控内部环境，不承诺角色间的数据安全隔离。
 6. **实施顺序**：先完成“对话 Trace + 构建 Trace + 异常 + 用量”，再接工具／Skill／Agent 和成本价格规则。
 
-**前端原型已按上述范围完成；下一阶段从阶段 A 的真实对话 Trace 后端数据表与埋点开始。**
+**前端原型与阶段 A 真实对话 Trace 已完成；下一阶段进入阶段 B 的知识库构建 Trace、完整上下文快照和 Harness 异常补强。异常指纹聚合与价格规则后端仍按后续阶段推进。**

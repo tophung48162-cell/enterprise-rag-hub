@@ -27,7 +27,7 @@ export interface ObservabilitySpan {
   estimatedCost?: number | null
   attempt?: number
   errorCode?: string
-  metadata: Record<string, string | number | boolean | null>
+  metadata: Record<string, unknown>
 }
 
 export interface ObservabilityRun {

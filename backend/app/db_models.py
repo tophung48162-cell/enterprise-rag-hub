@@ -252,6 +252,65 @@ class RunKnowledgeBase(Base):
     kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="RESTRICT"), primary_key=True)
 
 
+class ObservabilitySpan(Base):
+    __tablename__ = "observability_spans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    run_id: Mapped[str] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    trace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    parent_span_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="running", nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    offset_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    input_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    output_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    attributes_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+
+
+class ModelCall(Base):
+    __tablename__ = "model_calls"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    span_id: Mapped[str] = mapped_column(ForeignKey("observability_spans.id", ondelete="CASCADE"), unique=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id", ondelete="RESTRICT"))
+    model_config_id: Mapped[str] = mapped_column(ForeignKey("model_configs.id", ondelete="RESTRICT"))
+    capability: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_request_id: Mapped[str | None] = mapped_column(String(255))
+    attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="running", nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
+    usage_source: Mapped[str] = mapped_column(String(32), default="unavailable", nullable=False)
+    first_token_ms: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ErrorEvent(Base):
+    __tablename__ = "error_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    run_id: Mapped[str] = mapped_column(ForeignKey("query_runs.id", ondelete="CASCADE"), index=True)
+    span_id: Mapped[str | None] = mapped_column(ForeignKey("observability_spans.id", ondelete="CASCADE"))
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False)
+    code: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    safe_message: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 class OcrResult(Base):
     __tablename__ = "ocr_results"
 

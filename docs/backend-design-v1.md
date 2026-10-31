@@ -1,16 +1,16 @@
 # 知枢 · 企业知识中台后端设计（1.0）
 
-- 状态：推荐技术组合已确认；通用知识问答主链路和可观测前端原型已实现，完整文档解析与可观测后端待后续推进
-- 日期：2026-10-29；原型更新：2026-10-31
+- 状态：推荐技术组合已确认；通用知识问答主链路和可观测阶段 A 真实对话 Trace 已实现，完整文档解析、构建 Trace、上下文快照与成本后端待后续推进
+- 日期：2026-10-29；原型与阶段 A 更新：2026-10-31
 - 范围：企业内部通用版，不含登录、SSO、多租户、正式计费、Agent 和工作流编排
 
 ## 当前实现状态（2026-10-31）
 
 已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原件存储、同步与 Celery 异步任务、持久化状态和失败重试。知识库支持 Markdown 校验与上传、LangChain 结构化分块、幂等重切、人工编辑及删除清理；索引链路支持 LangChain `OpenAIEmbeddings` 批量调用、版本化向量快照、源内容校验、进度与错误状态，以及全部成功后的活动版本原子切换。检索链路使用活动版本的 Embedding 模型生成查询向量，PostgreSQL 通过 pgvector 余弦距离召回候选快照，支持阈值、候选池、Top K 和 Rerank 独立评分。问答链路已支持应用发布约束、持久化会话、多知识库合并、多轮上下文、LangChain `ChatOpenAI` 流式生成、SSE、引用快照和 Token 日志。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
 
-后端现有 57 项自动化测试、前端 47 项单元／组件／API 契约测试和 27 项浏览器端到端测试已通过；Compose 仅做静态校验。React 已通过 API Client 接入真实应用、会话、流式回答、引用和日志，浏览器测试以 HTTP 替身验证请求、SSE 分包、版本激活、向量／重排评分、原文快照和 Token 展示。可观测前端已覆盖总览、构建／对话 Trace、工具／Skill、上下文、异常和用量成本交互，但全部使用明确标记的脱敏样例，真实后端埋点与接口尚未实现。当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding、Rerank 或 LLM 已可用。
+可观测阶段 A 复用 `query_runs.id` 作为问答 Run ID，新增 `observability_spans`、`model_calls` 和 `error_events` 及 `0005_observability` 迁移。真实埋点覆盖配置加载、逐库检索、查询向量、向量查询、可选 Rerank、合并排序、上下文构建、流式 LLM、结果持久化与 SSE 成功／失败／停止；API 提供总览、Run、Trace 详情和逐事件异常查询。旧 QueryRun 没有 Span 时仍可读取且不会补造调用树；Token 缺失保持空值，价格与成本不做估算。React 联机时使用这些真实接口，断线时才显示明确标记的原型样例；真实上下文面板只展示已采集的结构化元数据，完整消息快照留待阶段 B。
 
-Word／PDF／Excel 服务端解析、HNSW 索引和完整可观测后端是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；向量检索与问答尚未进行 PostgreSQL／pgvector 或真实云账号验收。
+当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding、Rerank 或 LLM 已可用。Word／PDF／Excel 服务端解析、HNSW 索引、知识库构建 Trace、完整上下文快照、异常指纹聚合和价格规则后端是后续实现范围。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；向量检索与问答尚未进行 PostgreSQL／pgvector 或真实云账号验收。
 
 ## 1. 设计目标与边界
 
@@ -160,8 +160,9 @@ LangChain 用在 `ingestion`、`indexing`、`retrieval`、`chat` 和模型适配
 | `citations` | `id`、`message_id`、`chunk_id`、`ordinal`、`score`、`snapshot_text` | 快照保证后续重建后仍能审阅当次引用 |
 | `query_runs` | `id`、`conversation_id`、`assistant_id`、`query`、`answer`、`role_context`、`status`、`llm_model_id`、`input_tokens`、`output_tokens`、`first_token_ms`、`total_ms`、`error_code` | 一次问答一条主记录；状态含成功、失败、停止 |
 | `run_knowledge_bases` | `run_id`、`kb_id` | 完整记录多知识库范围 |
-| `run_stages` | `run_id`、`stage`、`started_at`、`duration_ms`、`status`、`metadata_json` | 检索、Rerank、生成等阶段耗时 |
-| `model_calls` | `id`、`run_id`、`task_id`、`provider_id`、`model_config_id`、`capability`、`input_tokens`、`output_tokens`、`total_tokens`、`duration_ms`、`usage_source`、`status` | 统一记录索引和问答模型调用；`usage_source` 区分服务商返回与本地估算 |
+| `observability_spans` | `id`、`trace_id`、`run_id`、`parent_span_id`、`kind`、`name`、`status`、`sequence`、`started_at`、`ended_at`、`offset_ms`、`duration_ms`、`attributes_json`、`error_code` | 阶段 A 已实现；记录检索、Rerank、上下文、生成和持久化等真实父子节点 |
+| `model_calls` | `id`、`span_id`、`run_id`、`provider_id`、`model_config_id`、`capability`、`attempt`、`input_tokens`、`output_tokens`、`total_tokens`、`first_token_ms`、`duration_ms`、`usage_source`、`status` | 阶段 A 已用于问答模型调用；`usage_source` 只区分服务商返回与不可用，不做本地 Token 估算 |
+| `error_events` | `id`、`run_id`、`span_id`、`category`、`severity`、`code`、`safe_message`、`fingerprint`、`retryable`、`created_at` | 阶段 A 逐事件记录异常与用量缺失警告，不做敏感堆栈外传 |
 | `tasks` | `id`、`type`、`kb_id`、`document_id`、`status`、`progress`、`attempt`、`idempotency_key`、`error_code`、`payload_json` | 持久化任务状态，Redis 不作为唯一记录 |
 
 ## 6. 状态机与事务规则
@@ -272,7 +273,7 @@ Provider.probe_capabilities(config)
 ### 9.3 SSE 事件
 
 ```text
-meta         { run_id, conversation_id, user_message_id, answer_message_id }
+meta         { run_id, trace_id, conversation_id, user_message_id, answer_message_id }
 citations    { items: [{ ordinal, chunk_id, snapshot_text, vector_score, rerank_score, ... }] }
 token        { text }
 done         { run_id, message_id, input_tokens, output_tokens, total_tokens, usage_source, first_token_ms, total_ms }
@@ -339,7 +340,7 @@ error        { code, message, run_id }
 | `POST` | `/conversations/{id}/messages/stream` | 发送问题，SSE 返回检索、生成和用量事件 |
 | `GET` | `/query-runs` | 最近 200 条记录，可选 `kb_id` 筛选 |
 
-当前未提供应用删除、独立取消接口和日志分页；停止生成通过客户端中断 SSE 请求实现。完整筛选、分页和调用级详情属于可观测模块后续范围。
+当前未提供应用删除、独立取消接口和日志分页；停止生成通过客户端中断 SSE 请求实现。阶段 A 已在 `/observability/*` 提供 Run 筛选、调用级 Trace 与异常事件查询；构建 Trace、完整消息快照和成本后端仍属后续范围。
 
 ## 11. 角色与无登录边界
 
@@ -357,7 +358,7 @@ error        { code, message, run_id }
 
 - 每次请求生成 `request_id`，贯穿 API、任务、模型调用和前端错误提示。
 - 查询日志保存问题、回答、角色上下文、应用、全部知识库、引用、模型和状态。
-- Token 优先使用服务商返回值；缺失时才本地估算，并以 `usage_source=estimated` 明确标识。
+- Token 只使用服务商返回值；缺失时保持空值，并以 `usage_source=unavailable` 明确标识，不按字符估算。
 - 记录首 Token、检索、Rerank、生成和总耗时；停止与失败同样记录。
 - 应用日志默认不记录 API Key、完整请求头、原始文件内容或模型上下文中的敏感配置。
 - 查询内容本身可能敏感，应提供保留期限和清理任务；1.0 默认可配置保留天数。
@@ -394,7 +395,7 @@ services:
 | 分块索引 | 预览与构建一致、人工编辑、重复任务、失败重试、版本切换、旧索引可用 |
 | 检索 | 活动版本隔离、多库过滤、无命中、Rerank 顺序、来源页码和表格坐标 |
 | 对话 | 多轮上下文、真实流式、停止、异常、上下文预算、引用与回答对应 |
-| 日志 | 真实／估算用量标识、首 Token 和阶段耗时、多库来源、失败与停止状态 |
+| 日志 | 服务商／不可用用量标识、首 Token 和阶段耗时、多库来源、失败与停止状态、Trace 异常闭合 |
 | 权限边界 | 各角色菜单对应接口均校验，不能通过直接调用 URL 绕过 |
 
 ### 14.2 端到端验收

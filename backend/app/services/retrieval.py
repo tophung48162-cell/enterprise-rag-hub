@@ -11,6 +11,7 @@ from app.providers.gateway import ModelGateway
 from app.schemas import RetrievalOut, RetrievalRequest, RetrievalResultOut
 from app.security import decrypt_secret
 from app.services.configs import get_model, get_provider
+from app.services.observability import TraceRecorder, safe_error
 
 
 @dataclass
@@ -105,6 +106,9 @@ async def retrieve_knowledge(
     gateway: ModelGateway,
     knowledge_base: KnowledgeBase,
     payload: RetrievalRequest,
+    *,
+    trace: TraceRecorder | None = None,
+    parent_span_id: str | None = None,
 ) -> RetrievalOut:
     started = time.perf_counter()
     query = payload.query.strip()
@@ -112,40 +116,107 @@ async def retrieve_knowledge(
         raise ApiError(422, "EMPTY_RETRIEVAL_QUERY", "检索问题不能为空")
     version = _active_version(db, knowledge_base)
     model, provider = _enabled_model(db, version.embedding_model_id, "Embedding")
-    embedded = await gateway.embed_documents(
-        provider,
-        model,
-        decrypt_secret(provider.secret_ciphertext),
-        [query],
-    )
-    if len(embedded.vectors) != 1 or len(embedded.vectors[0]) != version.dimensions:
-        raise ApiError(502, "EMBEDDING_DIMENSION_MISMATCH", "查询向量维度与活动索引不一致")
-    candidates = _vector_candidates(
-        db,
-        version,
-        embedded.vectors[0],
-        max(payload.candidate_k, payload.top_k),
-    )
-    candidates = [item for item in candidates if item.score >= payload.similarity_threshold]
+    embedding_span = trace.start(
+        "QueryEmbedding",
+        kind="model",
+        parent_id=parent_span_id,
+        summary="查询向量生成",
+        input_text="当前用户问题 · 原文采集未开启",
+        attributes={"index_version_id": version.id, "dimensions": version.dimensions},
+        provider=provider,
+        model=model,
+    ) if trace else None
+    try:
+        embedded = await gateway.embed_documents(
+            provider,
+            model,
+            decrypt_secret(provider.secret_ciphertext),
+            [query],
+        )
+        if len(embedded.vectors) != 1 or len(embedded.vectors[0]) != version.dimensions:
+            raise ApiError(502, "EMBEDDING_DIMENSION_MISMATCH", "查询向量维度与活动索引不一致")
+    except Exception as exc:
+        code, message, _ = safe_error(exc, "EMBEDDING_PROVIDER_FAILED", "Embedding 调用失败")
+        if trace and embedding_span:
+            trace.finish(embedding_span, "failed", output=message, error_code=code)
+        raise
+    if trace and embedding_span:
+        trace.finish(
+            embedding_span,
+            "succeeded",
+            output=f"vector[{version.dimensions}] · 向量内容未采集",
+            embedding=embedded,
+        )
+
+    vector_span = trace.start(
+        "VectorSearch",
+        parent_id=parent_span_id,
+        summary="pgvector 活动版本召回",
+        input_text=f"candidate_k={max(payload.candidate_k, payload.top_k)} · threshold={payload.similarity_threshold}",
+        attributes={"index_version_id": version.id},
+    ) if trace else None
+    try:
+        candidates = _vector_candidates(
+            db,
+            version,
+            embedded.vectors[0],
+            max(payload.candidate_k, payload.top_k),
+        )
+        candidates = [item for item in candidates if item.score >= payload.similarity_threshold]
+    except Exception as exc:
+        code, message, _ = safe_error(exc, "VECTOR_SEARCH_FAILED", "向量检索失败")
+        if trace and vector_span:
+            trace.finish(vector_span, "failed", output=message, error_code=code)
+        raise
     candidate_count = len(candidates)
+    if trace and vector_span:
+        trace.finish(
+            vector_span,
+            "succeeded",
+            output=f"达到阈值的候选 {candidate_count} 个",
+            attributes={"candidate_count": candidate_count},
+        )
+
     rerank_duration = None
     if payload.rerank and candidates:
         if not knowledge_base.rerank_model_id:
             raise ApiError(409, "RERANK_MODEL_NOT_CONFIGURED", "知识库未配置 Rerank 模型")
         rerank_model, rerank_provider = _enabled_model(db, knowledge_base.rerank_model_id, "Rerank")
-        reranked = await gateway.rerank(
-            rerank_provider,
-            rerank_model,
-            decrypt_secret(rerank_provider.secret_ciphertext),
-            query,
-            [item.embedding.source_text for item in candidates],
-            payload.top_k,
-        )
+        rerank_span = trace.start(
+            "Rerank",
+            kind="model",
+            parent_id=parent_span_id,
+            summary="候选池内独立重排",
+            input_text=f"query + {candidate_count} 个候选分块 · 原文采集未开启",
+            provider=rerank_provider,
+            model=rerank_model,
+        ) if trace else None
+        try:
+            reranked = await gateway.rerank(
+                rerank_provider,
+                rerank_model,
+                decrypt_secret(rerank_provider.secret_ciphertext),
+                query,
+                [item.embedding.source_text for item in candidates],
+                payload.top_k,
+            )
+        except Exception as exc:
+            code, message, _ = safe_error(exc, "RERANK_PROVIDER_FAILED", "Rerank 调用失败")
+            if trace and rerank_span:
+                trace.finish(rerank_span, "failed", output=message, error_code=code)
+            raise
         rerank_duration = reranked.duration_ms
         results = [
             _result_out(candidates[index], score)
             for index, score in sorted(reranked.scores, key=lambda item: -item[1])[: payload.top_k]
         ]
+        if trace and rerank_span:
+            trace.finish(
+                rerank_span,
+                "succeeded",
+                output=f"返回 {len(results)} 个重排结果",
+                attributes={"top_n": payload.top_k},
+            )
     else:
         results = [_result_out(candidate) for candidate in candidates[: payload.top_k]]
     return RetrievalOut(

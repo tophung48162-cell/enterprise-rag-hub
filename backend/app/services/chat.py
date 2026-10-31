@@ -24,6 +24,7 @@ from app.schemas import AssistantInput, ChatRequest, CitationOut, RetrievalReque
 from app.security import decrypt_secret
 from app.services.assistants import assistant_kb_ids, get_assistant, validate_assistant
 from app.services.configs import get_provider
+from app.services.observability import TraceRecorder, create_trace_root, safe_error
 from app.services.retrieval import retrieve_knowledge
 
 
@@ -34,6 +35,7 @@ class PreparedChat:
     user_message_id: str
     answer_message_id: str
     run_id: str
+    trace_id: str
     query: str
     role_context: str
 
@@ -79,6 +81,7 @@ def prepare_chat(db: Session, conversation_id: str, payload: ChatRequest) -> Pre
     db.add_all([user_message, answer_message, run])
     db.flush()
     db.add_all([RunKnowledgeBase(run_id=run.id, kb_id=kb_id) for kb_id in kb_ids])
+    trace_root = create_trace_root(db, run, name=assistant.name, assistant_id=assistant.id)
     if conversation.title == "新对话":
         conversation.title = query[:60]
     conversation.updated_at = utc_now()
@@ -89,6 +92,7 @@ def prepare_chat(db: Session, conversation_id: str, payload: ChatRequest) -> Pre
         user_message_id=user_message.id,
         answer_message_id=answer_message.id,
         run_id=run.id,
+        trace_id=trace_root.trace_id,
         query=query,
         role_context=payload.role_context,
     )
@@ -177,9 +181,16 @@ async def stream_grounded_chat(
         "user_message_id": prepared.user_message_id,
         "answer_message_id": prepared.answer_message_id,
         "run_id": prepared.run_id,
+        "trace_id": prepared.trace_id,
     }
     with SessionLocal() as db:
+        recorder = TraceRecorder(db, prepared.run_id)
         try:
+            config_span = recorder.start(
+                "LoadConfig",
+                summary="加载已发布应用与活动索引配置",
+                input_text=f"assistant_id={prepared.assistant_id}",
+            )
             assistant = db.get(Assistant, prepared.assistant_id)
             if not assistant:
                 raise ApiError(404, "ASSISTANT_NOT_FOUND", "问答应用不存在")
@@ -189,24 +200,53 @@ async def stream_grounded_chat(
             knowledge_bases = [db.get(KnowledgeBase, kb_id) for kb_id in kb_ids]
             if any(knowledge_base is None for knowledge_base in knowledge_bases):
                 raise ApiError(409, "ASSISTANT_KB_NOT_FOUND", "应用关联的知识库已不可用")
+            recorder.finish(
+                config_span,
+                "succeeded",
+                output=f"Top K={assistant.top_k} · candidate K={assistant.candidate_k} · {len(kb_ids)} 个知识库",
+                attributes={"kb_ids": kb_ids, "rerank": assistant.rerank_enabled},
+            )
 
             ranked: list[tuple[RetrievalResultOut, str]] = []
             for knowledge_base in knowledge_bases:
                 if knowledge_base is None:
                     continue
-                retrieval = await retrieve_knowledge(
-                    db,
-                    gateway,
-                    knowledge_base,
-                    RetrievalRequest(
-                        query=prepared.query,
-                        top_k=assistant.top_k,
-                        candidate_k=assistant.candidate_k,
-                        similarity_threshold=assistant.similarity_threshold,
-                        rerank=assistant.rerank_enabled,
-                    ),
+                retrieval_span = recorder.start(
+                    f"Retrieval · {knowledge_base.name}",
+                    summary="向量召回与可选 Rerank",
+                    input_text="当前用户问题 · 原文采集未开启",
                 )
+                try:
+                    retrieval = await retrieve_knowledge(
+                        db,
+                        gateway,
+                        knowledge_base,
+                        RetrievalRequest(
+                            query=prepared.query,
+                            top_k=assistant.top_k,
+                            candidate_k=assistant.candidate_k,
+                            similarity_threshold=assistant.similarity_threshold,
+                            rerank=assistant.rerank_enabled,
+                        ),
+                        trace=recorder,
+                        parent_span_id=retrieval_span.span.id,
+                    )
+                except Exception as exc:
+                    code, message, _ = safe_error(exc, "RETRIEVAL_FAILED", "知识检索失败")
+                    recorder.finish(retrieval_span, "failed", output=message, error_code=code)
+                    raise
                 ranked.extend((result, knowledge_base.name) for result in retrieval.results)
+                recorder.finish(
+                    retrieval_span,
+                    "succeeded",
+                    output=f"候选 {retrieval.candidate_count} 个 · 返回 {len(retrieval.results)} 个",
+                    attributes={
+                        "index_version_id": retrieval.index_version_id,
+                        "candidate_count": retrieval.candidate_count,
+                    },
+                )
+
+            merge_span = recorder.start("MergeAndRank", summary="多知识库合并、评分排序与引用快照")
             ranked.sort(
                 key=lambda item: -(item[0].rerank_score if item[0].rerank_score is not None else item[0].vector_score)
             )
@@ -230,10 +270,17 @@ async def stream_grounded_chat(
             if run:
                 run.citation_count = len(citations)
             db.flush()
+            recorder.finish(
+                merge_span,
+                "succeeded",
+                output=f"最终保留 {len(selected)} 个知识片段",
+                attributes={"citation_ids": [citation.chunk_id for citation in citations]},
+            )
             yield "citations", {
                 "items": [_citation_out(citation).model_dump(mode="json") for citation in citations]
             }
 
+            context_span = recorder.start("BuildContext", summary="构造最终模型上下文与引用编号")
             context = "\n\n".join(
                 f"[{index}] 知识库：{kb_name}\n文档：{result.document_name}\n标题：{result.title}\n原文：{result.text}"
                 for index, (result, kb_name) in enumerate(selected, start=1)
@@ -246,12 +293,34 @@ async def stream_grounded_chat(
                 )
             )
             prompt = HumanMessage(content=f"知识原文：\n{context}\n\n用户问题：{prepared.query}")
-            model = assistant.llm_model_id
             from app.services.configs import get_model
 
-            model_config = get_model(db, model)
+            model_config = get_model(db, assistant.llm_model_id)
             provider = get_provider(db, model_config.provider_id)
-            messages: list[BaseMessage] = [system, *_history(db, prepared), prompt]
+            history = _history(db, prepared)
+            messages: list[BaseMessage] = [system, *history, prompt]
+            recorder.finish(
+                context_span,
+                "succeeded",
+                output=f"{len(messages)} 条模型消息 · {len(citations)} 个引用编号",
+                attributes={
+                    "message_count": len(messages),
+                    "history_message_count": len(history),
+                    "context_characters": len(context),
+                    "dynamic_budget_enabled": False,
+                    "full_snapshot_captured": False,
+                },
+            )
+
+            llm_span = recorder.start(
+                "LLM · stream_chat",
+                kind="model",
+                summary="LangChain ChatOpenAI 流式生成",
+                input_text=f"System + {len(history)} 条历史 + {len(citations)} 个知识片段 + 当前问题",
+                attributes={"stream": True, "full_input_captured": False},
+                provider=provider,
+                model=model_config,
+            )
             async for chunk in gateway.stream_chat(
                 provider,
                 model_config,
@@ -274,7 +343,27 @@ async def stream_grounded_chat(
                 raise ApiError(502, "LLM_EMPTY_RESPONSE", "模型未返回可用回答，请重试", retryable=True)
             if total_tokens is None and input_tokens is not None and output_tokens is not None:
                 total_tokens = input_tokens + output_tokens
+            recorder.finish(
+                llm_span,
+                "succeeded",
+                output=f"流式回答完成 · {len(answer)} 字符 · 全文见问答消息",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                first_token_ms=first_token_ms,
+            )
+            if total_tokens is None:
+                recorder.record_event(
+                    code="USAGE_UNAVAILABLE",
+                    message="LLM 服务商未返回 Token；运行保持成功，用量与成本标记未知。",
+                    category="可观测自身",
+                    severity="warning",
+                    retryable=False,
+                    span_id=llm_span.span.id,
+                )
+
             elapsed = round((time.perf_counter() - started) * 1000)
+            persist_span = recorder.start("PersistResult", summary="持久化回答、引用和服务商用量")
             _finalize(
                 db,
                 prepared,
@@ -286,6 +375,8 @@ async def stream_grounded_chat(
                 first_token_ms=first_token_ms,
                 total_ms=elapsed,
             )
+            recorder.finish(persist_span, "succeeded", output="QueryRun、消息与引用已提交")
+            recorder.finish_root("succeeded", output=f"回答成功 · {len(citations)} 条引用", duration_ms=elapsed)
             yield "done", {
                 "run_id": prepared.run_id,
                 "message_id": prepared.answer_message_id,
@@ -304,6 +395,18 @@ async def stream_grounded_chat(
             }
         except asyncio.CancelledError:
             db.rollback()
+            recorder.close_open(
+                "stopped",
+                code="CHAT_STOPPED",
+                message="用户主动停止生成，已保留调用链与已产生用量。",
+                category="Harness",
+                severity="warning",
+                retryable=False,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                first_token_ms=first_token_ms,
+            )
             _finalize(
                 db,
                 prepared,
@@ -319,8 +422,23 @@ async def stream_grounded_chat(
             raise
         except Exception as exc:
             db.rollback()
-            code = exc.code if isinstance(exc, ApiError) else "CHAT_GENERATION_FAILED"
-            message = exc.message if isinstance(exc, ApiError) else "问答生成失败，请稍后重试"
+            code, message, retryable = safe_error(exc, "CHAT_GENERATION_FAILED", "问答生成失败，请稍后重试")
+            recorder.close_open(
+                "failed",
+                code=code,
+                message=message,
+                category=(
+                    "模型调用"
+                    if any(token in code for token in ("PROVIDER", "LLM", "EMBEDDING", "RERANK"))
+                    else "Harness"
+                ),
+                severity="error",
+                retryable=retryable,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                first_token_ms=first_token_ms,
+            )
             _finalize(
                 db,
                 prepared,

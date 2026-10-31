@@ -246,6 +246,87 @@ export interface QueryRunDto {
   created_at: string
 }
 
+export interface ObservabilityUsageDto {
+  input: number | null
+  output: number | null
+  total: number | null
+  source: 'provider' | 'unavailable'
+}
+
+export interface ObservabilityRunDto {
+  id: string
+  trace_id: string
+  kind: 'chat'
+  name: string
+  target: string
+  secondary_target: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'stopped' | 'timed_out'
+  started_at: string
+  duration_ms: number
+  progress: number
+  provider: string
+  model: string
+  usage: ObservabilityUsageDto
+  estimated_cost: number | null
+  cost_coverage: number
+  error_code: string | null
+  query: string
+  answer: string
+}
+
+export interface ObservabilitySpanDto {
+  id: string
+  run_id: string
+  parent_id: string | null
+  kind: 'stage' | 'model' | 'tool' | 'skill' | 'harness'
+  name: string
+  status: ObservabilityRunDto['status']
+  offset_ms: number
+  duration_ms: number
+  summary: string
+  input: string
+  output: string
+  provider: string | null
+  model: string | null
+  usage: ObservabilityUsageDto | null
+  estimated_cost: number | null
+  attempt: number
+  error_code: string | null
+  metadata: Record<string, unknown>
+}
+
+export interface ObservabilityRunDetailDto {
+  run: ObservabilityRunDto
+  spans: ObservabilitySpanDto[]
+}
+
+export interface ObservabilityErrorDto {
+  id: string
+  run_id: string
+  span_id: string | null
+  category: '模型调用' | '检索质量' | '工具／Skill' | '上下文' | 'Harness' | '可观测自身'
+  severity: 'warning' | 'error' | 'critical'
+  code: string
+  message: string
+  fingerprint: string
+  count: number
+  first_occurred_at: string
+  last_occurred_at: string
+  retryable: boolean
+}
+
+export interface ObservabilitySummaryDto {
+  run_count: number
+  success_rate: number
+  total_tokens: number
+  unknown_usage_count: number
+  estimated_cost: number | null
+  cost_coverage: number
+  status_counts: Record<string, number>
+  trend: Array<{ day: string; runs: number; failed: number; tokens: number }>
+  slow_spans: ObservabilitySpanDto[]
+}
+
 export interface ChatDoneDto {
   run_id: string
   message_id: string
@@ -260,7 +341,7 @@ export interface ChatDoneDto {
 }
 
 export interface ChatStreamHandlers {
-  onMeta: (data: { conversation_id: string; user_message_id: string; answer_message_id: string; run_id: string }) => void
+  onMeta: (data: { conversation_id: string; user_message_id: string; answer_message_id: string; run_id: string; trace_id: string }) => void
   onCitations: (items: CitationDto[]) => void
   onToken: (text: string) => void
   onDone: (data: ChatDoneDto) => void
@@ -366,6 +447,15 @@ export const hubApi = {
   deleteConversation: (id: string) => request<void>(`/conversations/${id}`, { method: 'DELETE' }),
   listQueryRuns: (knowledgeBaseId?: string) =>
     requestList<QueryRunDto>(`/query-runs${knowledgeBaseId ? `?kb_id=${encodeURIComponent(knowledgeBaseId)}` : ''}`),
+  listObservabilityRuns: (filters: { search?: string; status?: string; provider?: string; kind?: 'all' | 'chat' | 'build' } = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value) })
+    const query = params.toString()
+    return requestList<ObservabilityRunDto>(`/observability/runs${query ? `?${query}` : ''}`)
+  },
+  getObservabilitySummary: () => request<ObservabilitySummaryDto>('/observability/summary'),
+  getObservabilityRun: (id: string) => request<ObservabilityRunDetailDto>(`/observability/runs/${id}`),
+  listObservabilityErrors: () => requestList<ObservabilityErrorDto>('/observability/errors'),
   startOcr: (file: File, modelConfigId: string) => {
     const body = new FormData()
     body.append('model_config_id', modelConfigId)

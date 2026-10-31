@@ -170,11 +170,11 @@ export default function HubApp() {
         <Route path="/applications" element={<Applications />} />
         <Route path="/chat" element={<OnlineChat />} />
         <Route path="/logs" element={<Guard><RunLogs /></Guard>} />
-        <Route path="/observability" element={<Guard><ObservabilityOverview /></Guard>} />
-        <Route path="/observability/runs" element={<Guard><ObservabilityRuns /></Guard>} />
-        <Route path="/observability/runs/:runId" element={<Guard><ObservabilityRunDetail /></Guard>} />
-        <Route path="/observability/errors" element={<Guard><ObservabilityErrors /></Guard>} />
-        <Route path="/observability/usage" element={<Guard><ObservabilityUsage /></Guard>} />
+        <Route path="/observability" element={<Guard><ObservabilityOverview connected={knowledgeConnected} /></Guard>} />
+        <Route path="/observability/runs" element={<Guard><ObservabilityRuns connected={knowledgeConnected} /></Guard>} />
+        <Route path="/observability/runs/:runId" element={<Guard><ObservabilityRunDetail connected={knowledgeConnected} /></Guard>} />
+        <Route path="/observability/errors" element={<Guard><ObservabilityErrors connected={knowledgeConnected} /></Guard>} />
+        <Route path="/observability/usage" element={<Guard><ObservabilityUsage connected={knowledgeConnected} /></Guard>} />
         <Route path="*" element={<Result status="404" title="页面不存在" extra={<Button onClick={() => navigate('/workbench')}>返回工作台</Button>} />} />
       </Routes></main>
     </div>

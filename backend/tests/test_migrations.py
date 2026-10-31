@@ -38,6 +38,9 @@ def test_initial_migration_upgrades_clean_database_and_matches_models(tmp_path):
         "citations",
         "query_runs",
         "run_knowledge_bases",
+        "observability_spans",
+        "model_calls",
+        "error_events",
     }.issubset(inspector.get_table_names())
     assert "active_index_version_id" in {
         column["name"] for column in inspector.get_columns("knowledge_bases")
