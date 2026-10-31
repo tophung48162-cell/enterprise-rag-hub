@@ -67,6 +67,7 @@ export interface ObservabilityError {
   message: string
   fingerprint: string
   count: number
+  affectedRunCount: number
   firstOccurredAt: string
   lastOccurredAt: string
   retryable: boolean
@@ -201,12 +202,12 @@ export const observabilitySpans: ObservabilitySpan[] = [
 ]
 
 export const observabilityErrors: ObservabilityError[] = [
-  { id: 'err-001', runId: 'run-build-017', spanId: 'sp-017-batch', category: '模型调用', severity: 'error', code: 'UPSTREAM_RATE_LIMIT', message: 'Embedding 服务商返回限流，第 3 次尝试后停止。', fingerprint: 'embedding/aihubmix/429', count: 14, firstOccurredAt: '2026-10-31 15:02:11', lastOccurredAt: '2026-10-31 17:28:48', retryable: true },
-  { id: 'err-002', runId: 'run-chat-030', spanId: 'sp-030-llm', category: '模型调用', severity: 'error', code: 'LLM_TIMEOUT', message: 'LLM 读取超过 5 秒，未收到可用增量。', fingerprint: 'chat/openrouter/read-timeout', count: 6, firstOccurredAt: '2026-10-31 16:40:08', lastOccurredAt: '2026-10-31 17:21:49', retryable: true },
-  { id: 'err-003', runId: 'run-chat-030', spanId: 'sp-030-sse', category: 'Harness', severity: 'warning', code: 'SSE_CLIENT_DISCONNECTED', message: '服务端发送错误事件前检测到客户端连接关闭。', fingerprint: 'sse/client-disconnected', count: 3, firstOccurredAt: '2026-10-31 16:58:21', lastOccurredAt: '2026-10-31 17:21:50', retryable: false },
-  { id: 'err-004', runId: 'run-build-016', spanId: 'sp-016-root', category: 'Harness', severity: 'critical', code: 'WORKER_HEARTBEAT_DELAYED', message: 'Worker 心跳曾延迟 12 秒，当前已恢复；样例用于展示系统事件。', fingerprint: 'worker/heartbeat-delayed', count: 1, firstOccurredAt: '2026-10-31 17:34:58', lastOccurredAt: '2026-10-31 17:34:58', retryable: true },
-  { id: 'err-005', runId: 'run-build-015', spanId: 'sp-015-embedding', category: '可观测自身', severity: 'warning', code: 'USAGE_UNAVAILABLE', message: '部分 Embedding 批次未返回 Token，对应成本标记为未知。', fingerprint: 'usage/embedding/unavailable', count: 9, firstOccurredAt: '2026-10-31 17:09:44', lastOccurredAt: '2026-10-31 17:09:58', retryable: false },
-  { id: 'err-006', runId: 'run-chat-031', spanId: 'sp-031-context', category: '上下文', severity: 'warning', code: 'CONTEXT_HISTORY_TRUNCATED', message: '按上下文预算排除 2 条最早历史消息，保留完整当前问题。', fingerprint: 'context/history-truncated', count: 4, firstOccurredAt: '2026-10-31 16:22:14', lastOccurredAt: '2026-10-31 17:32:19', retryable: false },
+  { id: 'err-001', runId: 'run-build-017', spanId: 'sp-017-batch', category: '模型调用', severity: 'error', code: 'UPSTREAM_RATE_LIMIT', message: 'Embedding 服务商返回限流，第 3 次尝试后停止。', fingerprint: 'embedding/aihubmix/429', count: 14, affectedRunCount: 4, firstOccurredAt: '2026-10-31 15:02:11', lastOccurredAt: '2026-10-31 17:28:48', retryable: true },
+  { id: 'err-002', runId: 'run-chat-030', spanId: 'sp-030-llm', category: '模型调用', severity: 'error', code: 'LLM_TIMEOUT', message: 'LLM 读取超过 5 秒，未收到可用增量。', fingerprint: 'chat/openrouter/read-timeout', count: 6, affectedRunCount: 3, firstOccurredAt: '2026-10-31 16:40:08', lastOccurredAt: '2026-10-31 17:21:49', retryable: true },
+  { id: 'err-003', runId: 'run-chat-030', spanId: 'sp-030-sse', category: 'Harness', severity: 'warning', code: 'SSE_CLIENT_DISCONNECTED', message: '服务端发送错误事件前检测到客户端连接关闭。', fingerprint: 'sse/client-disconnected', count: 3, affectedRunCount: 2, firstOccurredAt: '2026-10-31 16:58:21', lastOccurredAt: '2026-10-31 17:21:50', retryable: false },
+  { id: 'err-004', runId: 'run-build-016', spanId: 'sp-016-root', category: 'Harness', severity: 'critical', code: 'WORKER_HEARTBEAT_DELAYED', message: 'Worker 心跳曾延迟 12 秒，当前已恢复；样例用于展示系统事件。', fingerprint: 'worker/heartbeat-delayed', count: 1, affectedRunCount: 1, firstOccurredAt: '2026-10-31 17:34:58', lastOccurredAt: '2026-10-31 17:34:58', retryable: true },
+  { id: 'err-005', runId: 'run-build-015', spanId: 'sp-015-embedding', category: '可观测自身', severity: 'warning', code: 'USAGE_UNAVAILABLE', message: '部分 Embedding 批次未返回 Token，对应成本标记为未知。', fingerprint: 'usage/embedding/unavailable', count: 9, affectedRunCount: 2, firstOccurredAt: '2026-10-31 17:09:44', lastOccurredAt: '2026-10-31 17:09:58', retryable: false },
+  { id: 'err-006', runId: 'run-chat-031', spanId: 'sp-031-context', category: '上下文', severity: 'warning', code: 'CONTEXT_HISTORY_TRUNCATED', message: '按上下文预算排除 2 条最早历史消息，保留完整当前问题。', fingerprint: 'context/history-truncated', count: 4, affectedRunCount: 3, firstOccurredAt: '2026-10-31 16:22:14', lastOccurredAt: '2026-10-31 17:32:19', retryable: false },
 ]
 
 export const initialPriceRules: PriceRule[] = [

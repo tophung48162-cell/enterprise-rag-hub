@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, select
@@ -242,3 +243,79 @@ async def test_failed_build_closes_trace_and_retry_appends_attempt(client, knowl
     assert [span["attempt"] for span in attempts] == [1, 2]
     assert [span["status"] for span in attempts] == ["failed", "succeeded"]
     assert succeeded["run"]["trace_id"] == failed["run"]["trace_id"]
+
+
+def test_error_groups_aggregate_chat_and_build_events(client, conversation, knowledge_base, db_session):  # noqa: F811,E501
+    app.dependency_overrides[get_gateway] = lambda: ChatGateway()
+    chat_response = send(client, conversation)
+    chat_run_id = sse_events(chat_response)[0][1]["run_id"]
+    queued = client.get(f"/api/v1/knowledge-bases/{knowledge_base['id']}/index-versions").json()[0]
+    db_session.execute(delete(ErrorEvent))
+    db_session.commit()
+
+    started = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)
+    shared = "shared/provider_timeout"
+    db_session.add_all([
+        ErrorEvent(
+            run_id=chat_run_id,
+            category="模型调用",
+            severity="warning",
+            code="LLM_TIMEOUT",
+            safe_message="首次问答超时",
+            fingerprint=shared,
+            retryable=True,
+            created_at=started,
+        ),
+        ErrorEvent(
+            run_id=chat_run_id,
+            category="模型调用",
+            severity="error",
+            code="LLM_TIMEOUT",
+            safe_message="第二次问答超时",
+            fingerprint=shared,
+            retryable=True,
+            created_at=started + timedelta(minutes=1),
+        ),
+        ErrorEvent(
+            build_id=queued["id"],
+            category="模型调用",
+            severity="critical",
+            code="LLM_TIMEOUT",
+            safe_message="最新构建超时",
+            fingerprint=shared,
+            retryable=False,
+            created_at=started + timedelta(minutes=3),
+        ),
+        ErrorEvent(
+            build_id=queued["id"],
+            category="可观测自身",
+            severity="warning",
+            code="USAGE_UNAVAILABLE",
+            safe_message="构建用量缺失",
+            fingerprint="build/usage_unavailable",
+            retryable=False,
+            created_at=started + timedelta(minutes=2),
+        ),
+    ])
+    db_session.commit()
+
+    response = client.get("/api/v1/observability/errors/groups")
+    assert response.status_code == 200, response.text
+    groups = response.json()
+    assert len(groups) == 2
+    group = groups[0]
+    assert group["fingerprint"] == shared
+    assert group["count"] == 3
+    assert group["affected_run_count"] == 2
+    assert group["severity"] == "critical"
+    assert group["message"] == "最新构建超时"
+    assert group["run_id"] == queued["id"]
+    assert group["retryable"] is False
+    assert group["first_occurred_at"].startswith("2026-10-31T12:00:00")
+    assert group["last_occurred_at"].startswith("2026-10-31T12:03:00")
+
+    limited = client.get("/api/v1/observability/errors/groups", params={"limit": 1}).json()
+    assert [item["fingerprint"] for item in limited] == [shared]
+    raw_events = client.get("/api/v1/observability/errors").json()
+    assert len(raw_events) == 4
+    assert all(event["count"] == 1 for event in raw_events)

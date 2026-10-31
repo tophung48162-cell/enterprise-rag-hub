@@ -5,12 +5,13 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas import (
+    ObservabilityErrorGroupOut,
     ObservabilityErrorOut,
     ObservabilityRunDetailOut,
     ObservabilityRunOut,
     ObservabilitySummaryOut,
 )
-from app.services.observability_query import get_run_detail, get_summary, list_errors, list_runs
+from app.services.observability_query import get_run_detail, get_summary, list_error_groups, list_errors, list_runs
 
 router = APIRouter(prefix="/observability", tags=["可观测"])
 
@@ -43,3 +44,11 @@ def observability_errors(
     db: Session = Depends(get_db),
 ) -> list[ObservabilityErrorOut]:
     return list_errors(db, limit=limit)
+
+
+@router.get("/errors/groups", response_model=list[ObservabilityErrorGroupOut])
+def observability_error_groups(
+    limit: int = Query(default=200, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> list[ObservabilityErrorGroupOut]:
+    return list_error_groups(db, limit=limit)

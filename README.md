@@ -2,7 +2,7 @@
 
 面向企业内部知识服务场景的通用知识中台，目标是覆盖“配置模型 → 构建知识库 → 导入与分块 → 检索测试 → 发布问答应用 → 在线对话 → 运行日志与调用链观测”的完整流程。
 
-> **当前边界**：React 已接入服务商／模型配置、图片异步 OCR、知识库管理、Markdown 原件上传、LangChain 持久化分块、版本化向量索引、向量检索与 Rerank、问答应用、LangChain SSE 多轮对话、不可变引用、Token 日志和真实运行 Trace；后端不可用时明确回退到本机演示。可观测阶段 B 已覆盖对话与知识库索引构建 Span、模型调用、异常事件、真实用量和 LLM 调用前完整消息快照；异常指纹聚合、价格规则后端与正式账单仍未实现。角色选择不是真实登录或服务端鉴权，完整上下文包含企业原文，只能在受控环境使用；Word／PDF／Excel 服务端解析仍未实现。云调用目前由测试替身验收，真实云账号、PostgreSQL／pgvector 和 Docker 基础设施尚未验收。
+> **当前边界**：React 已接入服务商／模型配置、图片异步 OCR、知识库管理、Markdown 原件上传、LangChain 持久化分块、版本化向量索引、向量检索与 Rerank、问答应用、LangChain SSE 多轮对话、不可变引用、Token 日志和真实运行 Trace；后端不可用时明确回退到本机演示。可观测阶段 B 已覆盖对话与知识库索引构建 Span、模型调用、异常事件、真实用量和 LLM 调用前完整消息快照；价格规则后端与正式账单仍未实现。角色选择不是真实登录或服务端鉴权，完整上下文包含企业原文，只能在受控环境使用；Word／PDF／Excel 服务端解析仍未实现。云调用目前由测试替身验收，真实云账号、PostgreSQL／pgvector 和 Docker 基础设施尚未验收。
 
 ## 功能
 
@@ -15,7 +15,7 @@
 - **问答应用**：真实持久化应用配置，关联知识库，配置 LLM、提示词、Top K、候选池、相似度、Rerank、草稿与发布；发布时校验全部知识库和活动索引。
 - **在线对话**：LangChain `ChatOpenAI` 流式生成、SSE 分包解析、多轮上下文、历史会话、停止生成和复制回答；引用保存活动索引原文快照，不受后续分块编辑影响。
 - **运行日志**：持久化查询与回答、知识来源、模型、输入／输出／总 Tokens、首 Token／总耗时、状态和错误码；只使用服务商实际用量，未返回时明确显示“未提供”。
-- **真实运行可观测**：对话记录 LoadConfig、逐库 Retrieval、QueryEmbedding、VectorSearch、可选 Rerank、MergeAndRank、BuildContext、LLM 和 PersistResult；索引构建记录源校验、Embedding 批次、向量写入、校验和激活。提供合并总览、Run 筛选、调用树、瀑布时间轴、逐事件异常中心、Token 分析和 LLM 调用前完整消息快照；异常指纹聚合与成本后端仍未接入。
+- **真实运行可观测**：对话记录 LoadConfig、逐库 Retrieval、QueryEmbedding、VectorSearch、可选 Rerank、MergeAndRank、BuildContext、LLM 和 PersistResult；索引构建记录源校验、Embedding 批次、向量写入、校验和激活。提供合并总览、Run 筛选、调用树、瀑布时间轴、异常指纹聚合、Token 分析和 LLM 调用前完整消息快照；异常中心展示发生次数、影响 Run、最高严重度与首次／最近发生时间，成本后端仍未接入。
 - **可观测原型回退**：后端未连接时仍可用明确标记的脱敏样例验收构建／对话 Trace、工具／Skill、完整上下文和价格规则交互，不代表真实监控数据。
 - **角色视图**：管理员、知识库管理人员、使用者，包含菜单、数据范围和直接路由检查。
 - **响应式布局**：桌面端三栏工作区及移动端导航和主要页面适配。
@@ -103,7 +103,7 @@ docker compose up --build
 
 完整部署将启动前端、API、独立 Worker、PostgreSQL／pgvector、MinIO 和 Redis。当前开发机没有 Docker，以上编排只做了静态校验；真实云模型也需要配置有效账号后另行联调。
 
-后续阶段包括 Word／PDF／Excel 服务端解析、HNSW 索引、异常指纹聚合、价格规则后端、Harness 异常补强和快照保留清理。阶段 A／B 数据模型、埋点、原文权限和成本边界见 [可观测模块设计](docs/observability-design-v1.md)。
+后续阶段包括 Word／PDF／Excel 服务端解析、HNSW 索引、价格规则后端、Harness 异常补强和快照保留清理。阶段 A／B 数据模型、埋点、原文权限和成本边界见 [可观测模块设计](docs/observability-design-v1.md)。
 
 ## 主要源码
 

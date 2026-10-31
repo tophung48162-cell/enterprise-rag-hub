@@ -899,6 +899,13 @@ test('联机观测读取构建 Trace、完整对话快照、异常与未知用�
       count: 1, first_occurred_at: now, last_occurred_at: now, retryable: false,
     }]),
   }))
+  await page.route('**/api/v1/observability/errors/groups', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify([{
+      id: 'error-real-latest', run_id: 'run-real-unknown', span_id: 'llm-run-real-unknown', category: '可观测自身', severity: 'error',
+      code: 'USAGE_UNAVAILABLE', message: '最近一次真实用量缺失。', fingerprint: 'chat/usage_unavailable',
+      count: 3, affected_run_count: 2, first_occurred_at: '2026-10-30T12:00:00Z', last_occurred_at: now, retryable: false,
+    }]),
+  }))
 
   await page.goto('/observability/runs')
   await expect(page.locator('.obs-demo-notice')).toContainText('真实运行 Trace')
@@ -934,7 +941,16 @@ test('联机观测读取构建 Trace、完整对话快照、异常与未知用�
 
   await page.goto('/observability/errors')
   await expect(page.locator('tbody')).toContainText('USAGE_UNAVAILABLE')
-  await page.locator('tbody').getByRole('button', { name: '定位 Trace' }).click()
+  const groupRow = page.locator('tbody tr.ant-table-row').filter({ hasText: 'chat/usage_unavailable' })
+  await expect(groupRow.locator('td').nth(4)).toHaveText('3')
+  await expect(groupRow.locator('td').nth(5)).toHaveText('2')
+  await groupRow.getByRole('button', { name: '详情', exact: true }).click()
+  const groupDrawer = page.locator('.ant-drawer:visible')
+  await expect(groupDrawer).toContainText('聚合次数')
+  await expect(groupDrawer).toContainText('2 个（构建与问答去重）')
+  await expect(groupDrawer).toContainText('2026-10-30 12:00:00')
+  await expect(groupDrawer).toContainText('2026-10-31 12:00:00')
+  await groupDrawer.getByRole('button', { name: '定位 Trace' }).click()
   await expect(page).toHaveURL(/\/observability\/runs\/run-real-unknown\?span=llm-run-real-unknown$/)
   await page.getByRole('tab', { name: '用量与异常' }).click()
   await expect(page.locator('.obs-usage-panel')).toContainText('用量或成本未知')

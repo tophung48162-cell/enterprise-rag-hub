@@ -163,20 +163,24 @@ describe('FastAPI client contracts', () => {
     const detail = { run, spans: [{ id: 'span-obs', run_id: 'run-obs', parent_id: null, usage: null, metadata: { full_snapshot_captured: true }, context_snapshot: contextSnapshot }] }
     const summary = { run_count: 1, success_rate: 100, total_tokens: 0, unknown_usage_count: 1, status_counts: { succeeded: 1 }, trend: [], slow_spans: [] }
     const errors = [{ id: 'error-obs', run_id: 'run-obs', span_id: 'span-obs', code: 'USAGE_UNAVAILABLE', count: 1 }]
+    const groups = [{ ...errors[0], count: 3, affected_run_count: 2, first_occurred_at: '2026-10-30T12:00:00Z', last_occurred_at: '2026-10-31T12:00:00Z' }]
     fetchMock
       .mockResolvedValueOnce(jsonResponse([run]))
       .mockResolvedValueOnce(jsonResponse(detail))
       .mockResolvedValueOnce(jsonResponse(summary))
       .mockResolvedValueOnce(jsonResponse(errors))
+      .mockResolvedValueOnce(jsonResponse(groups))
     await expect(hubApi.listObservabilityRuns({ search: '报销', status: 'succeeded', kind: 'chat' })).resolves.toEqual([run])
     await expect(hubApi.getObservabilityRun('run-obs')).resolves.toEqual(detail)
     await expect(hubApi.getObservabilitySummary()).resolves.toEqual(summary)
     await expect(hubApi.listObservabilityErrors()).resolves.toEqual(errors)
+    await expect(hubApi.listObservabilityErrorGroups()).resolves.toEqual(groups)
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       '/api/v1/observability/runs?search=%E6%8A%A5%E9%94%80&status=succeeded&kind=chat',
       '/api/v1/observability/runs/run-obs',
       '/api/v1/observability/summary',
       '/api/v1/observability/errors',
+      '/api/v1/observability/errors/groups',
     ])
   })
 

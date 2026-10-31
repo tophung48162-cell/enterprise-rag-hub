@@ -391,6 +391,10 @@ class ObservabilityErrorOut(BaseModel):
     retryable: bool
 
 
+class ObservabilityErrorGroupOut(ObservabilityErrorOut):
+    affected_run_count: int
+
+
 class ObservabilityTrendOut(BaseModel):
     day: str
     runs: int

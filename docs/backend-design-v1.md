@@ -1,6 +1,6 @@
 # 知枢 · 企业知识中台后端设计（1.0）
 
-- 状态：推荐技术组合已确认；通用知识问答主链路和可观测阶段 B 的对话 Trace、索引构建 Trace 与完整消息快照已实现，完整文档解析、异常聚合与成本后端待后续推进
+- 状态：推荐技术组合已确认；通用知识问答主链路、可观测阶段 B 和异常指纹聚合已实现，完整文档解析与成本后端待后续推进
 - 日期：2026-10-29；原型与阶段 A／B 更新：2026-10-31
 - 范围：企业内部通用版，不含登录、SSO、多租户、正式计费、Agent 和工作流编排
 
@@ -8,9 +8,9 @@
 
 已落地 FastAPI 工程、SQLAlchemy 模型、Alembic 迁移、服务商与模型配置、密钥加密、真实模型连接测试、通义云端 OCR、S3／MinIO 原件存储、同步与 Celery 异步任务、持久化状态和失败重试。知识库支持 Markdown 校验与上传、LangChain 结构化分块、幂等重切、人工编辑及删除清理；索引链路支持 LangChain `OpenAIEmbeddings` 批量调用、版本化向量快照、源内容校验、进度与错误状态，以及全部成功后的活动版本原子切换。检索链路使用活动版本的 Embedding 模型生成查询向量，PostgreSQL 通过 pgvector 余弦距离召回候选快照，支持阈值、候选池、Top K 和 Rerank 独立评分。问答链路已支持应用发布约束、持久化会话、多知识库合并、多轮上下文、LangChain `ChatOpenAI` 流式生成、SSE、引用快照和 Token 日志。根目录 Compose 已包含 `frontend`、`api`、`worker`、`postgres`、`minio`、`redis`，API 与 Worker 分进程运行。
 
-可观测阶段 A 复用 `query_runs.id` 作为问答 Run ID，新增 `observability_spans`、`model_calls` 和 `error_events` 及 `0005_observability` 迁移。阶段 B 通过 `0006_build_context` 让上述三表以可空 `run_id`／`build_id` 分别关联问答与 `index_versions`，复用索引版本 ID 作为构建 Run ID；真实构建埋点覆盖源校验、Embedding 阶段与批次、向量写入、索引校验和激活，重试追加批次尝试，失败闭合运行中节点。新增 `context_snapshots`，在 LLM 调用前保存实际消息数组、元数据和上下文 SHA‑256 哈希。合并查询 API 提供构建与问答总览、Run、Trace 详情和逐事件异常；旧 Run 没有 Span 或快照时仍可读取且不会补造数据。Token 缺失保持空值，价格与成本不做估算。React 联机时使用这些真实接口，断线时才显示明确标记的原型样例。
+可观测阶段 A 复用 `query_runs.id` 作为问答 Run ID，新增 `observability_spans`、`model_calls` 和 `error_events` 及 `0005_observability` 迁移。阶段 B 通过 `0006_build_context` 让上述三表以可空 `run_id`／`build_id` 分别关联问答与 `index_versions`，复用索引版本 ID 作为构建 Run ID；真实构建埋点覆盖源校验、Embedding 阶段与批次、向量写入、索引校验和激活，重试追加批次尝试，失败闭合运行中节点。新增 `context_snapshots`，在 LLM 调用前保存实际消息数组、元数据和上下文 SHA‑256 哈希。合并查询 API 提供构建与问答总览、Run、Trace 详情、原始异常和指纹聚合；聚合按 `fingerprint` 统计事件数、去重影响 Run、首次／最近时间和最高严重度，最新事件用于摘要与 Trace 定位。旧 Run 没有 Span 或快照时仍可读取且不会补造数据。Token 缺失保持空值，价格与成本不做估算。React 联机时使用这些真实接口，断线时才显示明确标记的原型样例。
 
-当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding、Rerank 或 LLM 已可用。Word／PDF／Excel 服务端解析、HNSW 索引、异常指纹聚合和价格规则后端是后续实现范围；OCR、文档解析、分块和 Harness 心跳扫描尚未纳入当前构建 Trace，动态 Token 预算、快照采样与保留清理也未实现。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；向量检索与问答尚未进行 PostgreSQL／pgvector 或真实云账号验收。
+当前机器没有 Docker，且未配置用户云服务密钥，因此真实容器、PostgreSQL／pgvector 和三家云端模型调用均未验收，不应据此判断真实 OCR、Embedding、Rerank 或 LLM 已可用。Word／PDF／Excel 服务端解析、HNSW 索引和价格规则后端是后续实现范围；OCR、文档解析、分块和 Harness 心跳扫描尚未纳入当前构建 Trace，动态 Token 预算、快照采样与保留清理也未实现。当前 `chunks.page_number` 对 Markdown 表示分块序号而非原始页码，`pending_index` 不能用于真实检索；向量检索与问答尚未进行 PostgreSQL／pgvector 或真实云账号验收。
 
 ## 1. 设计目标与边界
 
@@ -162,7 +162,7 @@ LangChain 用在 `ingestion`、`indexing`、`retrieval`、`chat` 和模型适配
 | `run_knowledge_bases` | `run_id`、`kb_id` | 完整记录多知识库范围 |
 | `observability_spans` | `id`、`trace_id`、`run_id`、`build_id`、`parent_span_id`、`kind`、`name`、`status`、`sequence`、`started_at`、`ended_at`、`offset_ms`、`duration_ms`、`attributes_json`、`error_code` | 阶段 B 以可空 `run_id`／`build_id` 分别关联问答与索引版本；记录检索、生成、构建批次、写入和激活等真实父子节点 |
 | `model_calls` | `id`、`span_id`、`run_id`、`build_id`、`provider_id`、`model_config_id`、`capability`、`attempt`、`input_tokens`、`output_tokens`、`total_tokens`、`first_token_ms`、`duration_ms`、`usage_source`、`status` | 已用于问答和构建模型调用；重试追加尝试，`usage_source` 只区分服务商返回与不可用，不做本地 Token 估算 |
-| `error_events` | `id`、`run_id`、`build_id`、`span_id`、`category`、`severity`、`code`、`safe_message`、`fingerprint`、`retryable`、`created_at` | 逐事件记录问答与构建异常及用量缺失警告，不做敏感堆栈外传或指纹聚合 |
+| `error_events` | `id`、`run_id`、`build_id`、`span_id`、`category`、`severity`、`code`、`safe_message`、`fingerprint`、`retryable`、`created_at` | 原始事件逐条保存问答与构建异常及用量缺失警告，查询接口按指纹聚合；不外传敏感堆栈 |
 | `context_snapshots` | `id`、`run_id`、`span_id`、`messages_json`、`metadata_json`、`created_at` | 阶段 B 与 BuildContext 一一关联，保存 LLM 调用前实际消息数组和包含上下文 SHA‑256 哈希的元数据 |
 | `tasks` | `id`、`type`、`kb_id`、`document_id`、`status`、`progress`、`attempt`、`idempotency_key`、`error_code`、`payload_json` | 持久化任务状态，Redis 不作为唯一记录 |
 
@@ -341,7 +341,7 @@ error        { code, message, run_id }
 | `POST` | `/conversations/{id}/messages/stream` | 发送问题，SSE 返回检索、生成和用量事件 |
 | `GET` | `/query-runs` | 最近 200 条记录，可选 `kb_id` 筛选 |
 
-当前未提供应用删除、独立取消接口和日志分页；停止生成通过客户端中断 SSE 请求实现。阶段 B 已在 `/observability/*` 提供构建与问答 Run 筛选、调用级 Trace、完整消息快照与异常事件查询；异常指纹聚合和成本后端仍属后续范围。
+当前未提供应用删除、独立取消接口和日志分页；停止生成通过客户端中断 SSE 请求实现。阶段 B 已在 `/observability/*` 提供构建与问答 Run 筛选、调用级 Trace、完整消息快照、原始异常事件查询和异常指纹聚合；成本后端仍属后续范围。
 
 ## 11. 角色与无登录边界
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { apiErrorMessage, hubApi } from './api'
 import type {
   ObservabilityErrorDto,
+  ObservabilityErrorGroupDto,
   ObservabilityRunDetailDto,
   ObservabilityRunDto,
   ObservabilitySpanDto,
@@ -71,7 +72,7 @@ export function mapObservabilitySpan(dto: ObservabilitySpanDto): ObservabilitySp
   }
 }
 
-export function mapObservabilityError(dto: ObservabilityErrorDto): ObservabilityError {
+export function mapObservabilityError(dto: ObservabilityErrorDto | ObservabilityErrorGroupDto): ObservabilityError {
   return {
     id: dto.id,
     runId: dto.run_id,
@@ -82,6 +83,7 @@ export function mapObservabilityError(dto: ObservabilityErrorDto): Observability
     message: dto.message,
     fingerprint: dto.fingerprint,
     count: dto.count,
+    affectedRunCount: 'affected_run_count' in dto ? dto.affected_run_count : 1,
     firstOccurredAt: displayTime(dto.first_occurred_at),
     lastOccurredAt: displayTime(dto.last_occurred_at),
     retryable: dto.retryable,
@@ -144,14 +146,14 @@ export function useObservabilityRun(connected: boolean, runId?: string) {
 }
 
 export function useObservabilityErrors(connected: boolean) {
-  const loader = useCallback(async () => (await hubApi.listObservabilityErrors()).map(mapObservabilityError), [])
+  const loader = useCallback(async () => (await hubApi.listObservabilityErrorGroups()).map(mapObservabilityError), [])
   const remote = useRemote(connected, loader)
   return { ...remote, errors: connected ? remote.data || [] : demoErrors }
 }
 
 export function useObservabilityOverview(connected: boolean) {
   const loader = useCallback(async () => {
-    const [summary, errors] = await Promise.all([hubApi.getObservabilitySummary(), hubApi.listObservabilityErrors()])
+    const [summary, errors] = await Promise.all([hubApi.getObservabilitySummary(), hubApi.listObservabilityErrorGroups()])
     return { summary, errors: errors.map(mapObservabilityError) }
   }, [])
   return useRemote(connected, loader)

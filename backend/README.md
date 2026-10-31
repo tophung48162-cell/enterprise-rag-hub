@@ -25,14 +25,15 @@ FastAPI + LangChain 后端当前实现服务商／模型配置、真实模型连
 - Token 只记录服务商 `usage_metadata`，未提供时保持空值和 `usage_source=unavailable`，不按字符估算；同时记录首 Token 和总耗时。
 - 真实对话 Trace：根 Span、配置、逐库检索、Embedding、向量查询、可选 Rerank、上下文、LLM 和持久化节点；`meta` 返回 `trace_id`。
 - 真实索引构建 Trace：复用 `index_versions.id` 作为构建 Run ID，记录源校验、Embedding 阶段与批次、向量写入、索引校验和激活；失败闭合运行中节点，重试追加新的批次尝试。
-- `observability_spans / model_calls / error_events` 通过可空 `run_id`／`build_id` 分别关联问答与构建；异常时闭合未完成节点，提供合并总览、Run、Trace 详情和逐事件异常接口，历史无 Span 的 Run 保持兼容。
+- `observability_spans / model_calls / error_events` 通过可空 `run_id`／`build_id` 分别关联问答与构建；异常时闭合未完成节点，提供合并总览、Run、Trace 详情、原始异常与指纹聚合接口，历史无 Span 的 Run 保持兼容。
+- 异常指纹聚合跨构建与问答统计发生次数、去重影响 Run、首次／最近发生时间和组内最高严重度；最新事件用于摘要、重试建议与 Trace 定位，原始事件接口保持不变。
 - `context_snapshots` 在 LLM 调用前保存实际消息数组、元数据和 SHA‑256 上下文哈希；详情接口按 BuildContext 返回完整快照，旧对话无快照时不做事后重建。
 - Celery 有限重试、指数退避、软／硬超时和独立 Worker 进程。
 - 存活／数据库就绪检查、请求 ID 和统一脱敏错误结构。
 
 ## 尚未实现
 
-Word／PDF／Excel 服务端解析、HNSW 索引、异常指纹聚合、价格规则后端与正式账单仍属于后续阶段；OCR、文档解析和分块尚未纳入构建 Trace，动态 Token 预算、快照采样与保留清理也尚未实现。React 已接入本 README 中的真实接口，并保留明确标记的浏览器演示回退。当前联调测试使用 HTTP 替身，真实云服务、PostgreSQL／pgvector 和容器运行仍未验收。
+Word／PDF／Excel 服务端解析、HNSW 索引、价格规则后端与正式账单仍属于后续阶段；OCR、文档解析和分块尚未纳入构建 Trace，动态 Token 预算、快照采样与保留清理也尚未实现。React 已接入本 README 中的真实接口，并保留明确标记的浏览器演示回退。当前联调测试使用 HTTP 替身，真实云服务、PostgreSQL／pgvector 和容器运行仍未验收。
 
 ## 本地开发
 
@@ -124,7 +125,8 @@ SSE 依次发送 `meta`、`citations`、多个 `token` 和 `done`；失败发送
 | `GET` | `/api/v1/observability/summary` | 构建与问答合并指标、状态、7 日趋势和慢模型调用 |
 | `GET` | `/api/v1/observability/runs` | 构建与对话 Run 列表；支持 `search/status/provider/kind/limit` |
 | `GET` | `/api/v1/observability/runs/{run_id}` | 问答 ID 或索引版本 ID 对应的 Run、父子 Span、模型调用用量和 BuildContext 完整快照；历史无 Trace 时 `spans=[]` |
-| `GET` | `/api/v1/observability/errors` | 构建与问答逐条异常事件，本阶段不做指纹聚合 |
+| `GET` | `/api/v1/observability/errors` | 构建与问答原始逐条异常事件，保留审计与下钻能力 |
+| `GET` | `/api/v1/observability/errors/groups` | 按指纹聚合发生次数、去重影响 Run、最高严重度和首次／最近发生时间 |
 
 `estimated_cost` 始终为 `null`，缺失 Token 不估算；密钥、请求头和 Base64 不进入观测字段。完整 Prompt 仅来自 LLM 调用前的真实 `context_snapshots`，不对历史对话事后补造；原文包含企业内容，当前角色选择不是安全边界。价格规则和正式账单仍未实现。
 
@@ -155,4 +157,4 @@ cd backend
 ../.venv/bin/pytest
 ```
 
-当前 63 项测试覆盖配置、密钥、LangChain 模型网关、同步／异步 OCR、知识库与模型引用保护、Markdown 持久化分块、版本化索引、活动版本切换、余弦召回、候选池重排、不可变快照、应用发布约束、会话持久化、SSE 引用与增量回答、多轮上下文、Token 有／无返回、失败脱敏、日志筛选和迁移；观测测试覆盖真实问答与构建 Trace 树、18／6／24 Token、构建维度失败闭合、重试第 2 次尝试、完整快照与网关实际输入一致、用量缺失警告、异常脱敏，以及历史无 Span Run 的兼容读取。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**，也不代表 PostgreSQL／pgvector、Docker 或 HNSW 已验收。
+当前 64 项测试覆盖配置、密钥、LangChain 模型网关、同步／异步 OCR、知识库与模型引用保护、Markdown 持久化分块、版本化索引、活动版本切换、余弦召回、候选池重排、不可变快照、应用发布约束、会话持久化、SSE 引用与增量回答、多轮上下文、Token 有／无返回、失败脱敏、日志筛选和迁移；观测测试覆盖真实问答与构建 Trace 树、18／6／24 Token、构建维度失败闭合、重试第 2 次尝试、完整快照与网关实际输入一致、用量缺失警告、异常脱敏、跨问答／构建异常指纹聚合，以及历史无 Span Run 的兼容读取。测试中的云响应由测试替身提供，**不代表已经使用真实 OpenRouter、AIHubmix 或通义账号完成云端联调**，也不代表 PostgreSQL／pgvector、Docker 或 HNSW 已验收。

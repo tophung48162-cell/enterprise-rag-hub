@@ -323,6 +323,10 @@ export interface ObservabilityErrorDto {
   retryable: boolean
 }
 
+export interface ObservabilityErrorGroupDto extends ObservabilityErrorDto {
+  affected_run_count: number
+}
+
 export interface ObservabilitySummaryDto {
   run_count: number
   success_rate: number
@@ -464,6 +468,7 @@ export const hubApi = {
   getObservabilitySummary: () => request<ObservabilitySummaryDto>('/observability/summary'),
   getObservabilityRun: (id: string) => request<ObservabilityRunDetailDto>(`/observability/runs/${id}`),
   listObservabilityErrors: () => requestList<ObservabilityErrorDto>('/observability/errors'),
+  listObservabilityErrorGroups: () => requestList<ObservabilityErrorGroupDto>('/observability/errors/groups'),
   startOcr: (file: File, modelConfigId: string) => {
     const body = new FormData()
     body.append('model_config_id', modelConfigId)

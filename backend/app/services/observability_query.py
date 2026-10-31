@@ -1,8 +1,8 @@
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import case, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.db_models import (
     Assistant,
@@ -21,6 +21,7 @@ from app.errors import ApiError
 from app.schemas import (
     ObservabilityContextMessageOut,
     ObservabilityContextSnapshotOut,
+    ObservabilityErrorGroupOut,
     ObservabilityErrorOut,
     ObservabilityRunDetailOut,
     ObservabilityRunOut,
@@ -281,6 +282,79 @@ def list_errors(db: Session, *, limit: int = 200) -> list[ObservabilityErrorOut]
         )
         for event in events
     ]
+
+
+def list_error_groups(db: Session, *, limit: int = 200) -> list[ObservabilityErrorGroupOut]:
+    severity_rank = case(
+        {"warning": 1, "error": 2, "critical": 3},
+        value=ErrorEvent.severity,
+        else_=0,
+    )
+    last_occurred_at = func.max(ErrorEvent.created_at)
+    rows = list(
+        db.execute(
+            select(
+                ErrorEvent.fingerprint,
+                func.count(ErrorEvent.id).label("event_count"),
+                func.count(
+                    func.distinct(func.coalesce(ErrorEvent.run_id, ErrorEvent.build_id))
+                ).label("affected_run_count"),
+                func.min(ErrorEvent.created_at).label("first_occurred_at"),
+                last_occurred_at.label("last_occurred_at"),
+                func.max(severity_rank).label("severity_rank"),
+            )
+            .group_by(ErrorEvent.fingerprint)
+            .order_by(last_occurred_at.desc(), ErrorEvent.fingerprint)
+            .limit(limit)
+        )
+    )
+    if not rows:
+        return []
+
+    latest_ranked = (
+        select(
+            ErrorEvent,
+            func.row_number()
+            .over(
+                partition_by=ErrorEvent.fingerprint,
+                order_by=(ErrorEvent.created_at.desc(), ErrorEvent.id.desc()),
+            )
+            .label("latest_rank"),
+        )
+        .where(ErrorEvent.fingerprint.in_([row.fingerprint for row in rows]))
+        .subquery()
+    )
+    latest_event = aliased(ErrorEvent, latest_ranked)
+    representatives = {
+        event.fingerprint: event
+        for event in db.scalars(
+            select(latest_event).where(latest_ranked.c.latest_rank == 1)
+        )
+    }
+    severity_names = {1: "warning", 2: "error", 3: "critical"}
+    groups = []
+    for row in rows:
+        latest = representatives[row.fingerprint]
+        entity_id = latest.run_id or latest.build_id
+        assert entity_id is not None
+        groups.append(
+            ObservabilityErrorGroupOut(
+                id=latest.id,
+                run_id=entity_id,
+                span_id=latest.span_id,
+                category=latest.category,
+                severity=severity_names.get(row.severity_rank, latest.severity),
+                code=latest.code,
+                message=latest.safe_message,
+                fingerprint=row.fingerprint,
+                count=row.event_count,
+                affected_run_count=row.affected_run_count,
+                first_occurred_at=row.first_occurred_at,
+                last_occurred_at=row.last_occurred_at,
+                retryable=latest.retryable,
+            )
+        )
+    return groups
 
 
 def get_summary(db: Session) -> ObservabilitySummaryOut:
